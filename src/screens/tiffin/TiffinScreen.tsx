@@ -279,8 +279,14 @@ export const TiffinScreen = () => {
       );
       const totalCost = groupDetails?.monthTotal ?? groupDetails?.cycleTotal ?? 0;
       const memberStats = groupDetails?.memberStats || [];
-      const members = selectedGroup.members || [];
-      const activeRate = groupDetails?.customRate || selectedGroup.defaultPrice || 100;
+      const members = selectedGroup?.members || [];
+      const activeRate =
+        selectedGroup?.defaultPrice ||
+        selectedGroup?.pricePerTiffin ||
+        groupDetails?.group?.defaultPrice ||
+        groupDetails?.group?.pricePerTiffin ||
+        groupDetails?.customRate ||
+        80;
 
       await generateAndShareTiffinReportPdf({
         groupName: selectedGroup.name,

@@ -1781,6 +1781,17 @@ export const api = {
         await db.splitGroups.saveAll([]);
         await db.splitExpenses.saveAll([]);
       }
+
+      try {
+        const { clearAllDetectedTransactions } = require('./smsTransactionStore');
+        if (typeof clearAllDetectedTransactions === 'function') {
+          await clearAllDetectedTransactions();
+        }
+      } catch (_) {}
+
+      dataEvents.emit('expense_deleted', 'all');
+      dataEvents.emit('category_updated');
+      dataEvents.emit('refresh_data');
     } catch (localErr) {
       console.error('Local reset error:', localErr);
     }
