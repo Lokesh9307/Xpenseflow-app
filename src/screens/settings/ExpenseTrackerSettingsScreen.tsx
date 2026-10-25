@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,9 @@ import {
   ActivityIndicator,
   Platform,
   TextInput,
+  AppState,
+  AppStateStatus,
+  Linking,
 } from 'react-native';
 import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -83,6 +86,8 @@ export const ExpenseTrackerSettingsScreen = ({ navigation }: any) => {
   const [smsTotalDetected, setSmsTotalDetected] = useState<number>(0);
   const [smsTotalAutoAmount, setSmsTotalAutoAmount] = useState<number>(0);
   const [smsLoading, setSmsLoading] = useState<boolean>(false);
+  const [hasSmsPermission, setHasSmsPermission] = useState<boolean | null>(null);
+  const isCheckingPermission = useRef<boolean>(false);
 
   useEffect(() => {
     if (user) {
@@ -118,6 +123,28 @@ export const ExpenseTrackerSettingsScreen = ({ navigation }: any) => {
     loadMonthPreview();
   }, [loadMonthPreview]);
 
+  // Live Android SMS permission check (does not rely on stale booleans)
+  const checkSmsPermission = useCallback(async () => {
+    if (Platform.OS !== 'android') {
+      setHasSmsPermission(false);
+      return false;
+    }
+    if (isCheckingPermission.current) return false;
+    isCheckingPermission.current = true;
+    try {
+      const granted = await smsAutoDetect.checkPermissionStatus();
+      setHasSmsPermission(granted);
+      console.log('[Settings] Live SMS permission check result:', granted);
+      return granted;
+    } catch (err) {
+      console.warn('[Settings] Failed to check SMS permission:', err);
+      setHasSmsPermission(false);
+      return false;
+    } finally {
+      isCheckingPermission.current = false;
+    }
+  }, []);
+
   // Load SMS Auto-Detect settings & stats
   const loadSmsSettings = useCallback(async () => {
     try {
@@ -139,44 +166,100 @@ export const ExpenseTrackerSettingsScreen = ({ navigation }: any) => {
 
   useEffect(() => {
     loadSmsSettings();
-  }, [loadSmsSettings]);
+    checkSmsPermission();
+  }, [loadSmsSettings, checkSmsPermission]);
+
+  // Re-check SMS permissions and reload settings whenever app returns to foreground
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextAppState: AppStateStatus) => {
+      if (nextAppState === 'active') {
+        console.log('[Settings] App returned to foreground — refreshing SMS permission state');
+        checkSmsPermission().then(async (granted) => {
+          const settings = await getSmsSettings();
+          if (granted) {
+            // Permission granted in Settings while backgrounded; resume service if configured
+            if (settings.enabled && !smsAutoDetect.isRunning) {
+              await smsAutoDetect.start();
+            }
+          } else {
+            // Permission was revoked in Settings while backgrounded
+            if (smsAutoDetect.isRunning) {
+              await smsAutoDetect.stop();
+            }
+          }
+          loadSmsSettings();
+        });
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [checkSmsPermission, loadSmsSettings]);
 
   // Listen for SMS transaction events to update stats
   useEffect(() => {
     const unsub1 = dataEvents.on('sms_transaction_detected', loadSmsSettings);
     const unsub2 = dataEvents.on('sms_transaction_approved', loadSmsSettings);
     const unsub3 = dataEvents.on('sms_transactions_bulk_approved', loadSmsSettings);
-    return () => { unsub1(); unsub2(); unsub3(); };
+    return () => {
+      unsub1();
+      unsub2();
+      unsub3();
+    };
   }, [loadSmsSettings]);
 
   // SMS Auto-Detect toggle handler
   const handleToggleSmsAutoDetect = async (newVal: boolean) => {
     setSmsLoading(true);
-    setSmsEnabled(newVal);
     try {
       if (newVal) {
-        const started = await smsAutoDetect.start();
-        if (!started) {
+        const result = await smsAutoDetect.start();
+        if (!result.success) {
           setSmsEnabled(false);
-          Alert.alert(
-            'SMS Permission Required',
-            'To auto-detect bank transactions, XpenseFlow needs permission to read incoming SMS messages. Please grant SMS permissions in your device settings.',
-          );
+          if (result.reason === 'permission_denied') {
+            setHasSmsPermission(false);
+            Alert.alert(
+              'SMS Permission Required',
+              'To auto-detect bank transactions, XpenseFlow needs permission to receive incoming SMS messages. Please grant SMS permissions in your device settings.',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Open Settings',
+                  onPress: () => {
+                    Linking.openSettings().catch(() => {});
+                  },
+                },
+              ]
+            );
+          } else if (result.reason === 'module_unavailable') {
+            Alert.alert(
+              'Feature Unavailable',
+              'SMS auto-detection requires the standalone Android build with SMS receiver support.'
+            );
+          } else {
+            Alert.alert('Error', result.message || 'Failed to start SMS auto-detection.');
+          }
           setSmsLoading(false);
           return;
         }
+
+        setSmsEnabled(true);
+        setHasSmsPermission(true);
         Alert.alert(
           'SMS Auto-Detection Enabled',
-          'XpenseFlow will now automatically detect bank transaction SMS messages and record expenses. Detected transactions will appear under pending review unless auto-approve is enabled.',
+          'XpenseFlow will now automatically detect bank transaction SMS messages and record expenses. Detected transactions will appear under pending review unless auto-approve is enabled.'
         );
       } else {
         await smsAutoDetect.stop();
+        setSmsEnabled(false);
         Alert.alert(
           'SMS Auto-Detection Disabled',
-          'Bank SMS detection has been turned off. Previously detected transactions are preserved.',
+          'Bank SMS detection has been turned off. Previously detected transactions are preserved.'
         );
       }
       await loadSmsSettings();
+      await checkSmsPermission();
     } catch (err: any) {
       setSmsEnabled(!newVal);
       Alert.alert('Error', err?.message || 'Failed to update SMS detection settings.');
@@ -646,6 +729,36 @@ export const ExpenseTrackerSettingsScreen = ({ navigation }: any) => {
                     Automatically captures bank debit/credit SMS and creates expense records.
                     Supports UPI, NEFT, IMPS, credit/debit cards across 20+ Indian banks.
                   </Text>
+
+                  {/* Android SMS Permission Status */}
+                  <View style={styles.smsPermissionBadgeRow}>
+                    <Ionicons
+                      name={hasSmsPermission ? 'shield-checkmark' : 'alert-circle'}
+                      size={13}
+                      color={hasSmsPermission ? '#22c55e' : '#f59e0b'}
+                    />
+                    <Text
+                      style={[
+                        styles.smsPermissionBadgeText,
+                        { color: hasSmsPermission ? '#22c55e' : '#f59e0b' },
+                      ]}
+                    >
+                      {hasSmsPermission === null
+                        ? 'Checking SMS permission...'
+                        : hasSmsPermission
+                        ? 'SMS Permission Granted'
+                        : 'SMS Permission Required'}
+                    </Text>
+                    {hasSmsPermission === false && (
+                      <TouchableOpacity
+                        onPress={() => Linking.openSettings().catch(() => {})}
+                        style={styles.settingsLinkBtn}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <Text style={styles.settingsLinkText}>Settings</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
                 </View>
 
                 {smsLoading ? (
@@ -1207,5 +1320,27 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     flex: 1,
+  },
+  smsPermissionBadgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginTop: 8,
+  },
+  smsPermissionBadgeText: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  settingsLinkBtn: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+    marginLeft: 4,
+  },
+  settingsLinkText: {
+    fontSize: 10.5,
+    fontWeight: '700',
+    color: '#f59e0b',
   },
 });

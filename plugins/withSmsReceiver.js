@@ -265,39 +265,64 @@ class SmsListenerPackage : ReactPackage {
 function withSmsMainApplication(config) {
   return withMainApplication(config, (cfg) => {
     let contents = cfg.modResults.contents;
+    const packageName = cfg.android?.package || 'com.xpenseflow.app';
 
     // Add import if not present
-    const importLine = 'import com.xpenseflow.app.SmsListenerPackage';
+    const importLine = `import ${packageName}.SmsListenerPackage`;
     if (!contents.includes(importLine)) {
       // Add import after the last import statement
       const lastImportIndex = contents.lastIndexOf('import ');
-      const lineEnd = contents.indexOf('\n', lastImportIndex);
-      contents =
-        contents.slice(0, lineEnd + 1) +
-        importLine +
-        '\n' +
-        contents.slice(lineEnd + 1);
+      if (lastImportIndex !== -1) {
+        const lineEnd = contents.indexOf('\n', lastImportIndex);
+        contents =
+          contents.slice(0, lineEnd + 1) +
+          importLine +
+          '\n' +
+          contents.slice(lineEnd + 1);
+      } else {
+        contents = importLine + '\n' + contents;
+      }
     }
 
     // Add package registration if not present
     if (!contents.includes('SmsListenerPackage()')) {
-      // Find the getPackages method and add our package
-      const packagesPattern = /packages\.add\(new \w+\(\)\)/;
-      if (packagesPattern.test(contents)) {
+      // 1. Kotlin: PackageList(this).packages.apply { ... }
+      if (contents.includes('PackageList(this).packages.apply')) {
         contents = contents.replace(
-          packagesPattern,
-          (match) => `${match}\n          packages.add(SmsListenerPackage())`
+          /PackageList\(this\)\.packages\.apply\s*\{/,
+          'PackageList(this).packages.apply {\n              add(SmsListenerPackage())'
         );
-      } else {
-        // Alternative: look for the packages list
-        const addPackagePattern = /(packages\.add\([^)]+\))/;
-        if (addPackagePattern.test(contents)) {
-          contents = contents.replace(
-            addPackagePattern,
-            (match) => `${match}\n          packages.add(SmsListenerPackage())`
-          );
-        }
       }
+      // 2. Kotlin: PackageList(this).packages (single expression or without apply)
+      else if (contents.includes('PackageList(this).packages')) {
+        contents = contents.replace(
+          /PackageList\(this\)\.packages/g,
+          'PackageList(this).packages.apply { add(SmsListenerPackage()) }'
+        );
+      }
+      // 3. Java: packages.add(...)
+      else if (/packages\.add\(new \w+\(\)\)/.test(contents)) {
+        contents = contents.replace(
+          /packages\.add\(new \w+\(\)\)/,
+          (match) => `${match}\n          packages.add(new SmsListenerPackage())`
+        );
+      } else if (/(packages\.add\([^)]+\))/.test(contents)) {
+        contents = contents.replace(
+          /(packages\.add\([^)]+\))/,
+          (match) => `${match}\n          packages.add(new SmsListenerPackage())`
+        );
+      }
+    }
+
+    // Ensure reactHost also includes SmsListenerPackage if reactHost has its own packageList
+    if (
+      contents.includes('packageList = PackageList(this).packages') &&
+      !contents.includes('packageList = PackageList(this).packages.apply { add(SmsListenerPackage()) }')
+    ) {
+      contents = contents.replace(
+        'packageList = PackageList(this).packages',
+        'packageList = PackageList(this).packages.apply { add(SmsListenerPackage()) }'
+      );
     }
 
     cfg.modResults.contents = contents;

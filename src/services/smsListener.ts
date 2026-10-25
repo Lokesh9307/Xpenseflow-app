@@ -18,6 +18,20 @@ export interface SmsMessage {
 
 type SmsCallback = (message: SmsMessage) => void;
 
+export interface SmsPermissionResult {
+  hasReceiveSms: boolean;
+  hasReadSms: boolean;
+  isGranted: boolean;
+}
+
+export type SmsStartStatus =
+  | { success: true }
+  | {
+      success: false;
+      error: 'unsupported_platform' | 'module_unavailable' | 'permission_denied' | 'native_error';
+      details?: string;
+    };
+
 const { SmsListenerModule } = NativeModules;
 
 // Create event emitter only on Android where the native module exists
@@ -32,6 +46,50 @@ class SmsListenerService {
   private _isListening = false;
 
   /**
+   * Check if the native SmsListenerModule is present and linked.
+   */
+  isNativeAvailable(): boolean {
+    return Platform.OS === 'android' && !!SmsListenerModule && !!eventEmitter;
+  }
+
+  /**
+   * Query Android OS for actual SMS permission status (RECEIVE_SMS and READ_SMS).
+   * Does not rely on cached or stored booleans.
+   */
+  async getDetailedPermissions(): Promise<SmsPermissionResult> {
+    if (Platform.OS !== 'android') {
+      return { hasReceiveSms: false, hasReadSms: false, isGranted: false };
+    }
+
+    try {
+      const hasReceiveSms = await PermissionsAndroid.check(
+        PermissionsAndroid.PERMISSIONS.RECEIVE_SMS
+      ).catch(() => false);
+
+      let hasReadSms = false;
+      try {
+        hasReadSms = await PermissionsAndroid.check(
+          PermissionsAndroid.PERMISSIONS.READ_SMS
+        );
+      } catch {
+        hasReadSms = false;
+      }
+
+      // In Android, RECEIVE_SMS is required for broadcast listener.
+      // On some devices, the SMS runtime permission group grants both or reports READ_SMS.
+      const isGranted = hasReceiveSms || hasReadSms;
+      console.log(
+        `[SmsListener] Permission check: RECEIVE_SMS=${hasReceiveSms}, READ_SMS=${hasReadSms}, isGranted=${isGranted}`
+      );
+
+      return { hasReceiveSms, hasReadSms, isGranted };
+    } catch (err) {
+      console.error('[SmsListener] Error querying SMS permissions:', err);
+      return { hasReceiveSms: false, hasReadSms: false, isGranted: false };
+    }
+  }
+
+  /**
    * Request RECEIVE_SMS permission from the user.
    * Returns true if granted.
    */
@@ -39,11 +97,27 @@ class SmsListenerService {
     if (Platform.OS !== 'android') return false;
 
     try {
+      // First check if already granted to prevent duplicate system prompts
+      const current = await this.getDetailedPermissions();
+      if (current.isGranted) {
+        console.log('[SmsListener] SMS permission already granted');
+        return true;
+      }
+
       const result = await PermissionsAndroid.request(
-        PermissionsAndroid.PERMISSIONS.RECEIVE_SMS
+        PermissionsAndroid.PERMISSIONS.RECEIVE_SMS,
+        {
+          title: 'SMS Permission',
+          message:
+            'XpenseFlow requires SMS permission to detect incoming bank transaction messages and automatically record expenses.',
+          buttonPositive: 'Allow',
+          buttonNegative: 'Deny',
+        }
       );
 
-      return result === PermissionsAndroid.RESULTS.GRANTED;
+      const granted = result === PermissionsAndroid.RESULTS.GRANTED;
+      console.log(`[SmsListener] Permission request result: ${result} (granted: ${granted})`);
+      return granted;
     } catch (err) {
       console.error('[SmsListener] Permission request failed:', err);
       return false;
@@ -54,32 +128,29 @@ class SmsListenerService {
    * Check if SMS permission is currently granted.
    */
   async hasPermissions(): Promise<boolean> {
-    if (Platform.OS !== 'android') return false;
-
-    try {
-      return await PermissionsAndroid.check(
-        PermissionsAndroid.PERMISSIONS.RECEIVE_SMS
-      );
-    } catch {
-      return false;
-    }
+    const status = await this.getDetailedPermissions();
+    return status.isGranted;
   }
 
   /**
-   * Start listening for incoming SMS messages.
-   * Must call requestPermissions() first.
+   * Start listening with detailed diagnostic status.
    */
-  async startListening(): Promise<boolean> {
-    if (Platform.OS !== 'android' || !SmsListenerModule || !eventEmitter) {
+  async startListeningDetailed(): Promise<SmsStartStatus> {
+    if (Platform.OS !== 'android') {
       console.warn('[SmsListener] SMS listening is only available on Android');
-      return false;
+      return { success: false, error: 'unsupported_platform' };
+    }
+
+    if (!SmsListenerModule || !eventEmitter) {
+      console.warn('[SmsListener] Native module SmsListenerModule is not linked in this build');
+      return { success: false, error: 'module_unavailable' };
     }
 
     try {
       const hasPerms = await this.hasPermissions();
       if (!hasPerms) {
         console.warn('[SmsListener] SMS permissions not granted');
-        return false;
+        return { success: false, error: 'permission_denied' };
       }
 
       // Tell native module to start forwarding events
@@ -98,11 +169,25 @@ class SmsListenerService {
       );
 
       this._isListening = true;
-      return true;
-    } catch (err) {
+      console.log('[SmsListener] Native listener successfully started');
+      return { success: true };
+    } catch (err: any) {
       console.error('[SmsListener] Failed to start listening:', err);
-      return false;
+      return {
+        success: false,
+        error: 'native_error',
+        details: err?.message || 'Native error starting listener',
+      };
     }
+  }
+
+  /**
+   * Start listening for incoming SMS messages.
+   * Backward-compatible boolean wrapper around startListeningDetailed.
+   */
+  async startListening(): Promise<boolean> {
+    const result = await this.startListeningDetailed();
+    return result.success;
   }
 
   /**

@@ -25,6 +25,12 @@ import {
   requestNotificationPermission,
 } from './smsNotificationService';
 
+export interface SmsStartResult {
+  success: boolean;
+  reason?: 'permission_denied' | 'module_unavailable' | 'unsupported_platform' | 'error';
+  message?: string;
+}
+
 class SmsAutoDetectService {
   private _isInitialized = false;
   private _isRunning = false;
@@ -58,26 +64,55 @@ class SmsAutoDetectService {
    * Also sets up the Android notification channel and requests
    * notification permission so the user gets instant alerts.
    */
-  async start(): Promise<boolean> {
-    if (Platform.OS !== 'android') return false;
-    if (this._isRunning) return true;
+  async start(): Promise<SmsStartResult> {
+    if (Platform.OS !== 'android') {
+      return {
+        success: false,
+        reason: 'unsupported_platform',
+        message: 'SMS auto-detection is only available on Android.',
+      };
+    }
+    if (this._isRunning) {
+      return { success: true };
+    }
+
+    // Verify native module availability before requesting permission
+    if (!smsListener.isNativeAvailable()) {
+      console.warn('[SmsAutoDetect] Native SmsListenerModule is not available in current APK build');
+      return {
+        success: false,
+        reason: 'module_unavailable',
+        message: 'The native SMS listener module is missing. Please install the updated APK build.',
+      };
+    }
 
     // Request SMS permissions
     const hasPerms = await smsListener.requestPermissions();
     if (!hasPerms) {
       console.warn('[SmsAutoDetect] SMS permissions denied');
       dataEvents.emit('sms_permission_denied');
-      return false;
+      return {
+        success: false,
+        reason: 'permission_denied',
+        message: 'SMS permission was not granted. Please grant SMS permissions in Android Settings.',
+      };
     }
 
     // Start native listener
-    const started = await smsListener.startListening();
-    if (!started) {
-      console.error('[SmsAutoDetect] Failed to start SMS listener');
-      return false;
+    const startStatus = await smsListener.startListeningDetailed();
+    if (!startStatus.success) {
+      console.error('[SmsAutoDetect] Failed to start SMS listener:', startStatus);
+      return {
+        success: false,
+        reason: startStatus.error === 'permission_denied' ? 'permission_denied' : 'error',
+        message: startStatus.details || 'Failed to start SMS listener.',
+      };
     }
 
     // Subscribe to SMS events
+    if (this.unsubscribe) {
+      this.unsubscribe();
+    }
     this.unsubscribe = smsListener.onSmsReceived(this.handleSms.bind(this));
 
     this._isRunning = true;
@@ -93,7 +128,15 @@ class SmsAutoDetectService {
     dataEvents.emit('sms_autodetect_started');
     console.log('[SmsAutoDetect] Service started — listening for bank SMS');
 
-    return true;
+    return { success: true };
+  }
+
+
+  /**
+   * Check live permission status from Android OS without requesting or altering state.
+   */
+  async checkPermissionStatus(): Promise<boolean> {
+    return await smsListener.hasPermissions();
   }
 
   /**
