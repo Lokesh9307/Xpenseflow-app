@@ -172,7 +172,7 @@ export const TiffinSettingsScreen = ({ navigation }: any) => {
       await generateAndShareTiffinReportPdf({
         groupName: selectedGroup.name,
         monthLabel,
-        activeRate: selectedGroup.defaultPrice || selectedGroup.pricePerTiffin || 80,
+        activeRate: selectedGroup.pricePerTiffin || selectedGroup.defaultPrice || 100,
         totalCost: groupData.monthTotal || 0,
         totalMeals: groupData.monthQuantity || 0,
         memberCount: selectedGroup.members?.length || 1,
@@ -205,7 +205,7 @@ export const TiffinSettingsScreen = ({ navigation }: any) => {
 
     setCreatingGroup(true);
     try {
-      const priceVal = parseFloat(newGroupPrice) || 80;
+      const priceVal = parseFloat(newGroupPrice) || 100;
       const res = await api.createTiffinGroup({
         name: newGroupName.trim(),
         defaultPrice: priceVal,
@@ -219,7 +219,7 @@ export const TiffinSettingsScreen = ({ navigation }: any) => {
         Alert.alert('Error', res.error);
       } else {
         setNewGroupName('');
-        setNewGroupPrice('80');
+        setNewGroupPrice('100');
         setNewGroupModalVisible(false);
         await fetchGroups();
         if (res.data) {
@@ -237,7 +237,8 @@ export const TiffinSettingsScreen = ({ navigation }: any) => {
   };
 
   // Current rate auto-fetched from group
-  const activeRate = selectedGroup?.defaultPrice || selectedGroup?.pricePerTiffin || 80;
+  const activeRate = selectedGroup?.pricePerTiffin || selectedGroup?.defaultPrice || 100;
+
   const dailyCost = activeRate * dailyTiffinCount;
   const inviteCode = selectedGroup
     ? (selectedGroup.inviteCode || getStaticGroupCode(selectedGroup._id || selectedGroup.name))
@@ -337,7 +338,7 @@ export const TiffinSettingsScreen = ({ navigation }: any) => {
           >
             {groups.map((g) => {
               const isSelected = selectedGroup?._id === g._id;
-              const rate = g.defaultPrice || g.pricePerTiffin || 80;
+              const rate = g.pricePerTiffin || g.defaultPrice || 100;
               const memberCount = g.members?.length || 1;
 
               return (

@@ -119,7 +119,7 @@ export const AddTiffinModal: React.FC<AddTiffinModalProps> = ({
   const members = selectedGroup?.members || [
     { _id: 'm1', name: 'You', email: 'you@example.com' },
   ];
-  const unitPrice = selectedGroup?.defaultPrice || selectedGroup?.pricePerTiffin || 80;
+  const unitPrice = selectedGroup?.pricePerTiffin || selectedGroup?.defaultPrice || 100;
 
   // Calculate participating members in base split
   const participatingMembers = members.filter((m: any, idx: number) => {

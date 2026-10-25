@@ -49,7 +49,7 @@ export const GroupConfigModal: React.FC<GroupConfigModalProps> = ({
   useEffect(() => {
     if (visible && group) {
       setName(group.name || '');
-      setPrice(String(group.pricePerTiffin || group.defaultPrice || 80));
+      setPrice(String(group.pricePerTiffin || group.defaultPrice || 100));
       setMembersList(group.members || []);
       setShowAddMember(false);
       setNewMemberName('');

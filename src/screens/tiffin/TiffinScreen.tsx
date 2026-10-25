@@ -281,12 +281,12 @@ export const TiffinScreen = () => {
       const memberStats = groupDetails?.memberStats || [];
       const members = selectedGroup?.members || [];
       const activeRate =
-        selectedGroup?.defaultPrice ||
         selectedGroup?.pricePerTiffin ||
-        groupDetails?.group?.defaultPrice ||
+        selectedGroup?.defaultPrice ||
         groupDetails?.group?.pricePerTiffin ||
+        groupDetails?.group?.defaultPrice ||
         groupDetails?.customRate ||
-        80;
+        100;
 
       await generateAndShareTiffinReportPdf({
         groupName: selectedGroup.name,
@@ -343,7 +343,8 @@ export const TiffinScreen = () => {
     setCreating(true);
     const res = await api.createTiffinGroup({
       name: groupName.trim(),
-      defaultPrice: parseFloat(defaultPrice) || 80,
+      defaultPrice: parseFloat(defaultPrice) || 100,
+      pricePerTiffin: parseFloat(defaultPrice) || 100,
     });
     setCreating(false);
 
@@ -360,7 +361,8 @@ export const TiffinScreen = () => {
   const dynamicTop = Math.max(insets.top + 6, 16);
 
   // Group stats
-  const activeRate = selectedGroup?.defaultPrice || selectedGroup?.pricePerTiffin || 80;
+  const activeRate = selectedGroup?.pricePerTiffin || selectedGroup?.defaultPrice || 100;
+
   const monthTotal = groupDetails?.monthTotal ?? groupDetails?.cycleTotal ?? 0;
   const monthQuantity = groupDetails?.monthQuantity ?? groupDetails?.cycleQuantity ?? 0;
   const memberCount = selectedGroup?.members?.length || 1;

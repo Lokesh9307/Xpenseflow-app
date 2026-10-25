@@ -403,6 +403,16 @@ export const api = {
 
     request(`/api/expenses${queryStr}`, { method: 'GET' }).then(async (res) => {
       if (res.status === 200 && Array.isArray(res.data)) {
+        const normalizedServerData = res.data.map((e: any) => {
+          const catName = e.category && e.category !== 'Others'
+            ? e.category
+            : ((typeof e.categoryId === 'object' && e.categoryId?.name) || e.category || 'Others');
+          return {
+            ...e,
+            category: catName,
+          };
+        });
+
         const localCurrent = await db.expenses.getAll();
         // Remove demo seed items if real server records are present
         const nonSeedLocal = localCurrent.filter(
@@ -412,7 +422,7 @@ export const api = {
         const localPending = nonSeedLocal.filter(
           (e) => e.syncSource === 'tiffin' || e.syncSource === 'split' || e.syncSource === 'sms_auto' || e.isOfflinePending
         );
-        const serverIds = new Set(res.data.map((e: any) => e._id || e.id));
+        const serverIds = new Set(normalizedServerData.map((e: any) => e._id || e.id));
 
         const isFilteredQuery = Boolean(params?.category && params.category !== 'All') || Boolean(params?.search) || Boolean(params?.month && params.month !== 'all');
         let finalExpenses: any[];
@@ -420,10 +430,10 @@ export const api = {
         if (isFilteredQuery) {
           const map = new Map<string, any>();
           nonSeedLocal.forEach((e) => map.set(e._id || e.id, e));
-          res.data.forEach((e: any) => map.set(e._id || e.id, e));
+          normalizedServerData.forEach((e: any) => map.set(e._id || e.id, e));
           finalExpenses = Array.from(map.values());
         } else {
-          finalExpenses = [...res.data];
+          finalExpenses = [...normalizedServerData];
           for (const lp of localPending) {
             if (!serverIds.has(lp._id || lp.id)) {
               finalExpenses.push(lp);
@@ -436,6 +446,7 @@ export const api = {
         dataEvents.emit('expenses_synced');
       }
     }).catch(() => {});
+
 
     return { status: 200, data: list };
   },
@@ -1407,12 +1418,13 @@ export const api = {
   syncTiffinExpenses: async (enabled: boolean): Promise<void> => {
     try {
       const allExpenses = await db.expenses.getAll();
+      const nonTiffin = allExpenses.filter(
+        (e) => !(e.syncSource === 'tiffin' || (e.category === 'Tiffin Expense' && e.syncRefId))
+      );
+
       if (!enabled) {
-        const remaining = allExpenses.filter(
-          (e) => !(e.syncSource === 'tiffin' || (e.category === 'Tiffin Expense' && e.syncRefId))
-        );
-        if (remaining.length !== allExpenses.length) {
-          await db.expenses.saveAll(remaining);
+        if (nonTiffin.length !== allExpenses.length) {
+          await db.expenses.saveAll(nonTiffin);
           dataEvents.emit('expense_deleted', 'all_tiffin_synced');
           dataEvents.emit('category_updated');
           dataEvents.emit('refresh_data');
@@ -1443,12 +1455,8 @@ export const api = {
       const currentUserName = (currentUser?.name || '').toLowerCase().trim();
       const currentUserEmail = (currentUser?.email || '').toLowerCase().trim();
 
-      let hasNewSync = false;
-      let lastSyncedExp: any = null;
-      const currentExpenses = await db.expenses.getAll();
-      const existingRefIds = new Set(
-        currentExpenses.map((e) => e.syncRefId).filter(Boolean)
-      );
+      const newSyncedList: any[] = [];
+      const seenRefIds = new Set<string>();
 
       for (const group of groups) {
         const gId = String(group._id || group.id);
@@ -1459,17 +1467,18 @@ export const api = {
 
         let userMemberIdx = -1;
         let userMember = members.find((m: any, idx: number) => {
-          const mUserId = String(m.userId || m._id || '');
+          const mUserId = String(m.userId || '');
+          const mMemberId = String(m._id || '');
           const mEmail = (m.email || '').toLowerCase().trim();
           const mName = (m.name || '').toLowerCase().trim();
           const match = (
-            (currentUserId && (mUserId === currentUserId || String(m.userId) === currentUserId)) ||
+            (currentUserId && (mUserId === currentUserId || mMemberId === currentUserId)) ||
             (currentUserEmail && mEmail === currentUserEmail) ||
             (currentUserName && mName === currentUserName) ||
             mName === 'you' ||
             mName === 'me' ||
             mName === 'self' ||
-            mName.includes('you')
+            (members.length === 1 && idx === 0)
           );
           if (match) {
             userMemberIdx = idx;
@@ -1478,37 +1487,41 @@ export const api = {
           return false;
         });
 
-        // Fallback: If not matched, member 0 is the user if creator or single member
-        const userIsCreator = String(group.createdBy || '') === currentUserId || members.length <= 1;
         if (!userMember && members.length > 0) {
-          userMember = members[0];
-          userMemberIdx = 0;
+          // If user is group creator, member 0 represents creator if unlinked
+          const isCreator = String(group.createdBy || '') === currentUserId;
+          if (isCreator || members.length <= 1) {
+            userMember = members[0];
+            userMemberIdx = 0;
+          }
         }
+
+        const candidateKeys = [
+          userMember ? String(userMember._id || '') : '',
+          userMember ? String(userMember.userId || '') : '',
+          userMemberIdx >= 0 ? String(userMemberIdx) : '',
+          currentUserId,
+        ].filter(Boolean);
 
         const entriesRes = await api.getTiffinEntries(gId);
         const entries = (entriesRes.data && Array.isArray(entriesRes.data))
           ? entriesRes.data
           : await db.tiffinEntries.find((e) => String(e.groupId) === gId);
 
+        const groupPrice = Number(group.pricePerTiffin || group.defaultPrice || 100);
+
         for (const entry of entries) {
           if (entry.noTiffin === true || entry.mealType === 'none') continue;
           const eId = String(entry._id || entry.id);
-          const syncRef = `tiffin_${eId}_${gId}`;
+          const syncRef = `tiffin_${eId}_${gId}_${userMember?._id || userMemberIdx || '0'}`;
 
-          if (existingRefIds.has(syncRef)) continue;
+          if (seenRefIds.has(syncRef)) continue;
 
+          const entryPrice = Number(entry.pricePerTiffin || groupPrice);
           let userBill = 0;
 
           // 1. Check memberBills
           if (entry.memberBills && typeof entry.memberBills === 'object') {
-            const candidateKeys = [
-              userMember ? String(userMember._id || '') : '',
-              userMember ? String(userMember.userId || '') : '',
-              userMemberIdx >= 0 ? String(userMemberIdx) : '',
-              currentUserId,
-              '0',
-            ].filter(Boolean);
-
             for (const key of candidateKeys) {
               if (entry.memberBills[key] !== undefined) {
                 const raw = entry.memberBills[key];
@@ -1520,61 +1533,61 @@ export const api = {
                 }
               }
             }
-
-            // If creator or single member and only 1 bill in memberBills
-            if (userBill <= 0 && (userMemberIdx === 0 || members.length <= 1 || userIsCreator)) {
-              const keys = Object.keys(entry.memberBills);
-              if (keys.length === 1) {
-                const raw = entry.memberBills[keys[0]];
-                const val = typeof raw === 'object' && raw !== null ? (raw.total ?? raw.amount) : raw;
-                const num = Number(val);
-                if (!isNaN(num) && num > 0) userBill = num;
-              }
-            }
           }
 
-          // 2. Check splitMemberIds / participants
+          // 2. Web shared-split model (baseQuantity > 0 & participantMemberIds / splitMemberIds)
           if (userBill <= 0) {
-            const splitIds: string[] = Array.isArray(entry.splitMemberIds) && entry.splitMemberIds.length > 0
-              ? entry.splitMemberIds.map(String)
-              : (Array.isArray(entry.participants)
-                ? entry.participants.map((p: any) => String(typeof p === 'object' ? (p.memberId || p._id || p.userId) : p))
+            const baseQty = Math.floor(Number(entry.baseQuantity) || 0);
+            const splitIds: string[] = Array.isArray(entry.participantMemberIds) && entry.participantMemberIds.length > 0
+              ? entry.participantMemberIds.map(String)
+              : (Array.isArray(entry.splitMemberIds) && entry.splitMemberIds.length > 0
+                ? entry.splitMemberIds.map(String)
                 : []);
 
-            if (splitIds.length > 0) {
-              const candidateKeys = [
-                userMember ? String(userMember._id || '') : '',
-                userMember ? String(userMember.userId || '') : '',
-                userMemberIdx >= 0 ? String(userMemberIdx) : '',
-                currentUserId,
-                '0',
-              ].filter(Boolean);
-
-              const isInSplit = candidateKeys.some((k) => splitIds.includes(k));
+            if (baseQty > 0 && splitIds.length > 0) {
+              const uniqueSplit = [...new Set(splitIds.filter(Boolean))];
+              const isInSplit = candidateKeys.some((k) => uniqueSplit.includes(k));
               if (isInSplit) {
-                const pricePerUnit = Number(group.defaultPrice || group.pricePerMeal || group.pricePerTiffin || 80);
-                const baseQty = Number(entry.baseQuantity || entry.quantity || entry.count || 1);
-                const baseShare = (baseQty * pricePerUnit) / splitIds.length;
-
-                let extraCount = 0;
-                if (entry.extras && typeof entry.extras === 'object') {
-                  for (const k of candidateKeys) {
-                    if (entry.extras[k] !== undefined) {
-                      extraCount = Number(entry.extras[k]) || 0;
-                      break;
-                    }
+                userBill += (baseQty * entryPrice) / uniqueSplit.length;
+              }
+              const extrasMap = entry.participantQuantities || entry.extras || {};
+              for (const k of candidateKeys) {
+                if (extrasMap[k] !== undefined) {
+                  const extraCount = Math.max(0, Math.floor(Number(extrasMap[k]) || 0));
+                  userBill += extraCount * entryPrice;
+                  break;
+                }
+              }
+            } else if (splitIds.length > 0) {
+              const uniqueSplit = [...new Set(splitIds.filter(Boolean))];
+              const isInSplit = candidateKeys.some((k) => uniqueSplit.includes(k));
+              if (isInSplit) {
+                const extrasMap = entry.participantQuantities || entry.extras || {};
+                let qty = 1;
+                for (const k of candidateKeys) {
+                  if (extrasMap[k] !== undefined) {
+                    qty = Math.max(1, Math.floor(Number(extrasMap[k]) || 1));
+                    break;
                   }
                 }
-                userBill = baseShare + (extraCount * pricePerUnit);
+                userBill = qty * entryPrice;
               }
-            } else if (members.length <= 1 || userIsCreator) {
-              userBill = Number(entry.totalPrice || group.defaultPrice || group.pricePerMeal || group.pricePerTiffin || 80);
+            } else if (Array.isArray(entry.participants) && entry.participants.length > 0) {
+              const isInParticipants = entry.participants.some((p: any) => {
+                const pId = String(typeof p === 'object' ? (p.memberId || p._id || p.userId) : p);
+                return candidateKeys.includes(pId);
+              });
+              if (isInParticipants) {
+                const total = Number(entry.totalCost ?? entry.totalPrice ?? (entryPrice * entry.participants.length));
+                userBill = total / entry.participants.length;
+              }
+            } else if (members.length > 1) {
+              // Group-wide split across all members (never give 100% to creator when members exist)
+              const total = Number(entry.totalCost ?? entry.totalPrice ?? (entryPrice * (entry.quantity || entry.count || 1)));
+              userBill = total / members.length;
+            } else if (members.length <= 1) {
+              userBill = Number(entry.totalCost ?? entry.totalPrice ?? entryPrice);
             }
-          }
-
-          // 3. Fallback: equal share of totalPrice
-          if (userBill <= 0 && entry.totalPrice > 0 && (userMember || members.length <= 1)) {
-            userBill = Number(entry.totalPrice) / Math.max(1, members.length);
           }
 
           if (userBill > 0) {
@@ -1582,14 +1595,14 @@ export const api = {
             const formattedMeal = mealName.charAt(0).toUpperCase() + mealName.slice(1);
             const roundedAmount = Math.round(userBill * 100) / 100;
             const newExp = {
-              _id: `tiffin_exp_${eId}`,
+              _id: `tiffin_exp_${eId}_${userMember?._id || userMemberIdx || '0'}`,
               title: `Tiffin: ${formattedMeal} (${gName})`,
               amount: roundedAmount,
               category: 'Tiffin Expense',
               categoryId: tiffinCat?._id || tiffinCat?.id,
               date: entry.date || entry.createdAt || new Date().toISOString(),
               paymentMethod: 'Tiffin Tracker',
-              notes: `Group: ${gName} · ${entry.quantity || entry.count || 1} meal(s)${entry.notes ? ` · ${entry.notes}` : ''}`,
+              notes: `Group: ${gName} · Share: ₹${roundedAmount}${entry.notes ? ` · ${entry.notes}` : ''}`,
               syncSource: 'tiffin',
               syncRefId: syncRef,
               groupName: gName,
@@ -1598,23 +1611,29 @@ export const api = {
               quantity: entry.quantity || entry.count || 1,
             };
 
-            await db.expenses.insertOne(newExp);
-            existingRefIds.add(syncRef);
-            hasNewSync = true;
-            lastSyncedExp = newExp;
+            newSyncedList.push(newExp);
+            seenRefIds.add(syncRef);
           }
         }
       }
 
-      if (hasNewSync) {
-        dataEvents.emit('expense_added', lastSyncedExp);
-        dataEvents.emit('category_updated');
-        dataEvents.emit('refresh_data');
+      // Save non-tiffin + newly calculated split tiffin items
+      const finalExpenses = [...nonTiffin, ...newSyncedList];
+      finalExpenses.sort(
+        (a, b) => new Date(b.date || b.createdAt).getTime() - new Date(a.date || a.createdAt).getTime()
+      );
+      await db.expenses.saveAll(finalExpenses);
+
+      if (newSyncedList.length > 0) {
+        dataEvents.emit('expense_added', newSyncedList[0]);
       }
+      dataEvents.emit('category_updated');
+      dataEvents.emit('refresh_data');
     } catch (err) {
       console.error('[syncTiffinExpenses] Error:', err);
     }
   },
+
 
   // ── Sync Split Expenses (Supports multiple groups) ──────────────────────────
   syncSplitExpenses: async (enabled: boolean): Promise<void> => {
