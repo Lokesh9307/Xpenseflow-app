@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="360" viewBox="0 0 1400 360">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#14b8a6"/>
+      <stop offset="100%" stop-color="#0d9488"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="360" height="360" rx="80" fill="url(#bg)"/>
+  <g transform="translate(180,180)">
+    <g stroke="#ffffff" stroke-width="32" stroke-linecap="round">
+      <line x1="-65" y1="-65" x2="65" y2="65"/>
+      <line x1="65" y1="-65" x2="-65" y2="65"/>
+    </g>
+    <circle cx="65" cy="-65" r="18" fill="#fb7185"/>
+  </g>
+  <text x="420" y="240" font-family="Poppins Medium" font-size="150" fill="#FFFFFF" letter-spacing="-2">XpenseFlow</text>
+</svg>

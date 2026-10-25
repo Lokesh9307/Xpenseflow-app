@@ -1,0 +1,8 @@
+# EAS Build Ignore File
+# Exclude backend and development artifacts from upload to EAS
+
+backend/
+.env*.local
+dist/
+web-build/
+*.log
