@@ -5,6 +5,7 @@ import { ThemeProvider, useTheme } from './src/context/ThemeContext';
 import { AuthProvider } from './src/context/AuthContext';
 import { FeatureProvider } from './src/context/FeatureContext';
 import { RootNavigator } from './src/navigation/RootNavigator';
+import { AppUpdatePrompt } from './src/components/AppUpdatePrompt';
 
 import { smsAutoDetect } from './src/services/smsAutoDetectService';
 
@@ -21,6 +22,7 @@ function MainApp() {
     <>
       <StatusBar style={isDark ? 'light' : 'dark'} />
       <RootNavigator />
+      <AppUpdatePrompt />
     </>
   );
 }

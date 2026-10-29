@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
+import { fmtMoney } from '../utils/money';
 
 export interface ShareCodeModalProps {
   visible: boolean;
@@ -40,7 +41,7 @@ export const ShareCodeModal: React.FC<ShareCodeModalProps> = ({
   const handleShareWhatsApp = async () => {
     const message = `🍱 *Join our Tiffin Group on XpenseFlow!*
 Group: *${groupName}*
-Price: *₹${pricePerMeal}/meal*
+Price: *₹${fmtMoney(pricePerMeal)}/meal*
 
 🔑 Your 4-digit invite code:
 *${inviteCode}*
@@ -89,7 +90,7 @@ Price: *₹${pricePerMeal}/meal*
                 <View style={{ flex: 1 }}>
                   <Text style={[styles.title, { color: theme.textPrimary }]}>Group Invite Code</Text>
                   <Text style={[styles.groupSubtitle, { color: theme.textMuted }]}>
-                    {groupName} · ₹{pricePerMeal}/meal
+                    {groupName} · ₹{fmtMoney(pricePerMeal)}/meal
                   </Text>
                 </View>
                 <TouchableOpacity onPress={onClose} style={styles.closeBtn}>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -66,6 +66,7 @@ export const DashboardScreen = ({ navigation }: any) => {
   const [budgets, setBudgets] = useState<any[]>([]);
   const [recurringList, setRecurringList] = useState<any[]>([]);
   const [notifications, setNotifications] = useState<any[]>([]);
+  const dashboardRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Interactive UI state for TRANTOR components
   const [timeframe, setTimeframe] = useState<'1d' | '7 days' | '1m' | '6m' | '1y'>('7 days');
@@ -121,11 +122,19 @@ export const DashboardScreen = ({ navigation }: any) => {
     }
   }, []);
 
+  const scheduleDashboardReload = useCallback(() => {
+    if (dashboardRefreshTimer.current) clearTimeout(dashboardRefreshTimer.current);
+    dashboardRefreshTimer.current = setTimeout(() => {
+      dashboardRefreshTimer.current = null;
+      void loadDashboardData();
+    }, 250);
+  }, [loadDashboardData]);
+
   useEffect(() => {
     loadDashboardData();
   }, [loadDashboardData]);
 
-  // Instant 0ms synchronization: updates dashboard in milliseconds upon any user action
+  // Apply event payloads immediately and coalesce the follow-up network refresh.
   useEffect(() => {
     const unsubExpAdded = dataEvents.on('expense_added', (newExp: any) => {
       if (newExp) {
@@ -135,14 +144,14 @@ export const DashboardScreen = ({ navigation }: any) => {
           return [newExp, ...prev];
         });
       }
-      loadDashboardData();
+      scheduleDashboardReload();
     });
 
     const unsubExpDeleted = dataEvents.on('expense_deleted', (deletedId: string) => {
       if (deletedId) {
         setExpenses((prev) => prev.filter((e) => (e._id || e.id) !== deletedId));
       }
-      loadDashboardData();
+      scheduleDashboardReload();
     });
 
     const unsubExpUpdated = dataEvents.on('expense_updated', (updatedExp: any) => {
@@ -152,11 +161,11 @@ export const DashboardScreen = ({ navigation }: any) => {
           prev.map((e) => ((e._id || e.id) === id ? { ...e, ...updatedExp } : e))
         );
       }
-      loadDashboardData();
+      scheduleDashboardReload();
     });
 
     const unsubIncAdded = dataEvents.on('income_added', () => {
-      loadDashboardData();
+      scheduleDashboardReload();
     });
 
     const unsubCatUpdated = dataEvents.on('category_updated', (cat: any) => {
@@ -187,20 +196,20 @@ export const DashboardScreen = ({ navigation }: any) => {
           );
         }
       }
-      loadDashboardData();
+      if (cat) scheduleDashboardReload();
     });
 
     const unsubRefresh = dataEvents.on('refresh_data', () => {
-      loadDashboardData();
+      scheduleDashboardReload();
     });
 
     const unsubCatDeleted = dataEvents.on('category_deleted', (catId: string) => {
       setCategories((prev) => prev.filter((c) => (c._id || c.id) !== catId));
-      loadDashboardData();
+      scheduleDashboardReload();
     });
 
-    const unsubExpSynced = dataEvents.on('expenses_synced', () => {
-      loadDashboardData();
+    const unsubExpSynced = dataEvents.on('expenses_synced', (syncedExpenses: any[]) => {
+      if (Array.isArray(syncedExpenses)) setExpenses(syncedExpenses);
     });
 
     return () => {
@@ -212,8 +221,9 @@ export const DashboardScreen = ({ navigation }: any) => {
       unsubRefresh();
       unsubCatDeleted();
       unsubExpSynced();
+      if (dashboardRefreshTimer.current) clearTimeout(dashboardRefreshTimer.current);
     };
-  }, [loadDashboardData]);
+  }, [scheduleDashboardReload]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -689,7 +699,7 @@ export const DashboardScreen = ({ navigation }: any) => {
           onPress: async () => {
             const res = await api.deleteExpense(id);
             if (res.error) Alert.alert('Error', res.error);
-            else loadDashboardData();
+            else scheduleDashboardReload();
           },
         },
       ]
@@ -1711,26 +1721,26 @@ export const DashboardScreen = ({ navigation }: any) => {
       <AddExpenseModal
         visible={expenseModalVisible}
         onClose={() => setExpenseModalVisible(false)}
-        onSuccess={loadDashboardData}
+        onSuccess={scheduleDashboardReload}
         initialAmount={calcPrefillAmount}
       />
 
       <AddIncomeModal
         visible={incomeModalVisible}
         onClose={() => setIncomeModalVisible(false)}
-        onSuccess={loadDashboardData}
+        onSuccess={scheduleDashboardReload}
       />
 
       <AddSplitModal
         visible={splitModalVisible}
         onClose={() => setSplitModalVisible(false)}
-        onSuccess={loadDashboardData}
+        onSuccess={scheduleDashboardReload}
       />
 
       <AddTiffinModal
         visible={tiffinModalVisible}
         onClose={() => setTiffinModalVisible(false)}
-        onSuccess={loadDashboardData}
+        onSuccess={scheduleDashboardReload}
       />
 
       <CategoryModal
@@ -1739,7 +1749,7 @@ export const DashboardScreen = ({ navigation }: any) => {
           setCategoryModalVisible(false);
           setSelectedCategoryForEdit(null);
         }}
-        onSuccess={loadDashboardData}
+        onSuccess={scheduleDashboardReload}
         initialCategory={selectedCategoryForEdit}
       />
 
@@ -1755,7 +1765,7 @@ export const DashboardScreen = ({ navigation }: any) => {
       <NotificationDrawer
         visible={notifDrawerVisible}
         onClose={() => setNotifDrawerVisible(false)}
-        onUpdated={loadDashboardData}
+        onUpdated={scheduleDashboardReload}
       />
     </View>
   );

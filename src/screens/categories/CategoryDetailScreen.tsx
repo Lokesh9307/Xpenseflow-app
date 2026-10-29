@@ -11,6 +11,8 @@ import {
   Platform,
   Modal,
   ScrollView,
+  TextInput,
+  Switch,
 } from 'react-native';
 import { Feather, Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -33,7 +35,11 @@ export const CategoryDetailScreen = ({ route, navigation }: any) => {
 
   const [categoryName, setCategoryName] = useState(initialName || 'Category');
   const [categoryIcon, setCategoryIcon] = useState(initialIcon || '');
-  const [limit, setLimit] = useState(initialLimit || 5000);
+  // Budget is optional — 0 means "no budget set for this category"
+  const [limit, setLimit] = useState(initialLimit || 0);
+  // User opt-in budget alert (threshold %)
+  const [alertEnabled, setAlertEnabled] = useState(false);
+  const [alertPercent, setAlertPercent] = useState('90');
   const [expenses, setExpenses] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -106,8 +112,10 @@ export const CategoryDetailScreen = ({ route, navigation }: any) => {
         );
         if (found) {
           setCategoryName(found.name);
-          setLimit(found.limit || found.monthlyLimit || 5000);
+          setLimit(found.limit || found.monthlyLimit || 0);
           if (found.icon) setCategoryIcon(found.icon);
+          setAlertEnabled(!!found.alertEnabled);
+          setAlertPercent(String(found.alertPercent || 90));
         }
       }
     } catch (err) {
@@ -170,7 +178,11 @@ export const CategoryDetailScreen = ({ route, navigation }: any) => {
           (cat.previousName && cat.previousName === categoryName))
       ) {
         if (cat.name) setCategoryName(cat.name);
-        if (cat.limit || cat.monthlyLimit) setLimit(cat.limit || cat.monthlyLimit);
+        if (cat.limit !== undefined || cat.monthlyLimit !== undefined) {
+          setLimit(cat.limit ?? cat.monthlyLimit ?? 0);
+        }
+        if (cat.alertEnabled !== undefined) setAlertEnabled(!!cat.alertEnabled);
+        if (cat.alertPercent) setAlertPercent(String(cat.alertPercent));
         if (cat.icon) setCategoryIcon(cat.icon);
         if (cat.previousName && cat.name && cat.previousName !== cat.name) {
           setExpenses((prev) =>
@@ -201,8 +213,55 @@ export const CategoryDetailScreen = ({ route, navigation }: any) => {
 
   const totalSpent = expenses.reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
   const remaining = Math.max(0, limit - totalSpent);
-  const percentUsed = limit > 0 ? Math.min(Math.round((totalSpent / limit) * 100), 100) : 0;
-  const isOverBudget = totalSpent > limit;
+  const rawPercentUsed = limit > 0 ? (totalSpent / limit) * 100 : 0;
+  const percentUsed = Math.min(Math.round(rawPercentUsed), 100);
+  const isOverBudget = limit > 0 && totalSpent > limit;
+  const activeAlertPercent = (() => {
+    const p = parseFloat(alertPercent);
+    return Number.isFinite(p) ? Math.min(Math.max(p, 1), 100) : 90;
+  })();
+  const showAlert = limit > 0 && alertEnabled && rawPercentUsed >= activeAlertPercent;
+
+  const handleToggleAlert = async (value: boolean) => {
+    setAlertEnabled(value);
+    try {
+      await api.updateCategory(categoryId, {
+        alertEnabled: value,
+        alertPercent: activeAlertPercent,
+      });
+      dataEvents.emit('category_updated', {
+        _id: categoryId,
+        name: categoryName,
+        alertEnabled: value,
+        alertPercent: activeAlertPercent,
+      });
+    } catch (err: any) {
+      Alert.alert('Error', err?.message || 'Could not update the budget alert');
+    }
+  };
+
+  const handleSaveAlert = async () => {
+    try {
+      const res = await api.updateCategory(categoryId, {
+        alertEnabled: true,
+        alertPercent: activeAlertPercent,
+      });
+      if (res.error) {
+        Alert.alert('Error', res.error);
+      } else {
+        setAlertEnabled(true);
+        Alert.alert('Saved', `You'll be alerted when this category reaches ${activeAlertPercent}% of its budget.`);
+        dataEvents.emit('category_updated', {
+          _id: categoryId,
+          name: categoryName,
+          alertEnabled: true,
+          alertPercent: activeAlertPercent,
+        });
+      }
+    } catch (err: any) {
+      Alert.alert('Error', err?.message || 'Could not save the budget alert');
+    }
+  };
 
   const handleDeleteExpense = (id: string, title: string) => {
     Alert.alert(
@@ -392,43 +451,49 @@ export const CategoryDetailScreen = ({ route, navigation }: any) => {
                       },
                     ]}
                   >
-                    {isOverBudget ? '⚠️ Exceeded' : `${percentUsed}% used`}
+                    {limit === 0
+                      ? 'No budget'
+                      : isOverBudget
+                      ? '⚠️ Exceeded'
+                      : `${percentUsed}% used`}
                   </Text>
                 </View>
               </View>
 
-              {/* Progress Bar Track */}
-              <View
-                style={[
-                  styles.heroProgressTrack,
-                  {
-                    backgroundColor: isDark
-                      ? 'rgba(255, 255, 255, 0.08)'
-                      : '#E2E8F0',
-                  },
-                ]}
-              >
+              {/* Progress Bar Track (only when a budget is set) */}
+              {limit > 0 ? (
                 <View
                   style={[
-                    styles.heroProgressFill,
+                    styles.heroProgressTrack,
                     {
-                      width: `${percentUsed}%`,
-                      backgroundColor: isOverBudget
-                        ? '#EF4444'
-                        : percentUsed >= 80
-                        ? '#F59E0B'
-                        : t.accent,
+                      backgroundColor: isDark
+                        ? 'rgba(255, 255, 255, 0.08)'
+                        : '#E2E8F0',
                     },
                   ]}
-                />
-              </View>
+                >
+                  <View
+                    style={[
+                      styles.heroProgressFill,
+                      {
+                        width: `${percentUsed}%`,
+                        backgroundColor: isOverBudget
+                          ? '#EF4444'
+                          : percentUsed >= 80
+                          ? '#F59E0B'
+                          : t.accent,
+                      },
+                    ]}
+                  />
+                </View>
+              ) : null}
 
               {/* Bottom Financial Metrics Row */}
               <View style={[styles.heroStatsRow, { borderTopColor: isDark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(0, 0, 0, 0.05)' }]}>
                 <View style={styles.heroStatItem}>
                   <Text style={[styles.heroSubStatLabel, { color: t.textMuted }]}>Budget Limit</Text>
                   <Text style={[styles.heroSubStatValue, { color: t.textPrimary }]}>
-                    ₹{limit.toLocaleString()}
+                    {limit > 0 ? `₹${limit.toLocaleString()}` : 'Not set'}
                   </Text>
                 </View>
                 <View style={[styles.heroStatDivider, { backgroundColor: t.cardBorder }]} />
@@ -442,7 +507,7 @@ export const CategoryDetailScreen = ({ route, navigation }: any) => {
                       { color: isOverBudget ? '#EF4444' : t.accent },
                     ]}
                   >
-                    ₹{Math.abs(remaining).toLocaleString()}
+                    {limit > 0 ? `₹${Math.abs(remaining).toLocaleString()}` : '—'}
                   </Text>
                 </View>
                 <View style={[styles.heroStatDivider, { backgroundColor: t.cardBorder }]} />
@@ -453,6 +518,107 @@ export const CategoryDetailScreen = ({ route, navigation }: any) => {
                   </Text>
                 </View>
               </View>
+            </View>
+
+            {/* ── Budget Alert (user opt-in threshold) ── */}
+            <View
+              style={{
+                backgroundColor: t.cardBg,
+                borderColor: t.cardBorder,
+                borderWidth: 1,
+                borderRadius: 16,
+                padding: 14,
+                marginTop: 12,
+              }}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <Ionicons name="notifications-outline" size={16} color={t.accent} />
+                <Text
+                  style={{
+                    flex: 1,
+                    marginLeft: 8,
+                    fontSize: 13,
+                    fontWeight: '700',
+                    color: t.textPrimary,
+                  }}
+                >
+                  Budget Alert
+                </Text>
+                <Switch
+                  value={alertEnabled}
+                  onValueChange={handleToggleAlert}
+                  trackColor={{ true: t.accent, false: isDark ? '#33333A' : '#D1D5DB' }}
+                  thumbColor="#FFFFFF"
+                />
+              </View>
+              <Text style={{ marginTop: 6, fontSize: 11.5, color: t.textMuted, lineHeight: 16 }}>
+                Turn on to be alerted on this page when spending reaches your threshold of the
+                monthly budget. You choose the threshold — 90% by default.
+              </Text>
+
+              {alertEnabled ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 10 }}>
+                  <Text style={{ fontSize: 12, color: t.textMuted }}>Alert me at</Text>
+                  <TextInput
+                    style={{
+                      marginHorizontal: 8,
+                      minWidth: 64,
+                      borderWidth: 1,
+                      borderColor: t.cardBorder,
+                      backgroundColor: t.itemBg,
+                      borderRadius: 10,
+                      paddingHorizontal: 10,
+                      paddingVertical: 6,
+                      color: t.textPrimary,
+                      fontWeight: '700',
+                      textAlign: 'center',
+                    }}
+                    keyboardType="numeric"
+                    value={alertPercent}
+                    onChangeText={(v) => setAlertPercent(v.replace(/[^0-9]/g, ''))}
+                    maxLength={3}
+                  />
+                  <Text style={{ fontSize: 12, color: t.textMuted }}>% of budget</Text>
+                  <View style={{ flex: 1 }} />
+                  <TouchableOpacity
+                    activeOpacity={0.85}
+                    onPress={handleSaveAlert}
+                    style={{
+                      backgroundColor: t.accent,
+                      borderRadius: 10,
+                      paddingHorizontal: 14,
+                      paddingVertical: 8,
+                    }}
+                  >
+                    <Text style={{ color: '#FFFFFF', fontSize: 12, fontWeight: '700' }}>Save</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : null}
+
+              {limit === 0 ? (
+                <Text style={{ marginTop: 10, fontSize: 11.5, color: t.textMuted }}>
+                  Set a monthly budget limit via "Edit Category" to activate budget alerts.
+                </Text>
+              ) : null}
+
+              {showAlert ? (
+                <View
+                  style={{
+                    marginTop: 10,
+                    borderRadius: 10,
+                    borderWidth: 1,
+                    borderColor: 'rgba(245, 158, 11, 0.35)',
+                    backgroundColor: 'rgba(245, 158, 11, 0.12)',
+                    paddingHorizontal: 10,
+                    paddingVertical: 8,
+                  }}
+                >
+                  <Text style={{ color: '#F59E0B', fontSize: 12, fontWeight: '700' }}>
+                    ⚠️ Budget alert — {Math.round(rawPercentUsed)}% of ₹
+                    {limit.toLocaleString()} used (threshold {activeAlertPercent}%)
+                  </Text>
+                </View>
+              ) : null}
             </View>
 
             {/* ── Section Title + Month Selector + Add Button ── */}

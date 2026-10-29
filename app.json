@@ -7,13 +7,13 @@
     "icon": "./assets/icon.png",
     "scheme": "xpenseflow",
     "userInterfaceStyle": "automatic",
-    "runtimeVersion": {
-      "policy": "appVersion"
-    },
+    "runtimeVersion": "1.0.0",
     "updates": {
       "enabled": true,
+      "url": "https://u.expo.dev/42a5cac8-e5b0-4ec9-b0ed-18155c04976b",
       "fallbackToCacheTimeout": 0,
-      "checkAutomatically": "ON_LOAD"
+      "checkAutomatically": "ON_LOAD",
+      "updatePolicy": "ON_ERROR_RECOVERY"
     },
     "ios": {
       "supportsTablet": true,

@@ -63,6 +63,121 @@ export const clearStoredAuth = async (): Promise<void> => {
   await safeStorage.removeItem(STORAGE_USER_KEY);
 };
 
+// ── Offline queue for tiffin meals ──────────────────────────────────────────
+// Meals logged while the server is unreachable are queued here and replayed on
+// the next successful sync, so nothing stays "mobile-only" forever.
+const PENDING_TIFFIN_KEY = 'xpenseflow_pending_tiffin_writes';
+
+const readPendingTiffinWrites = async (): Promise<any[]> => {
+  try {
+    const raw = await safeStorage.getItem(PENDING_TIFFIN_KEY);
+    const list = raw ? JSON.parse(raw) : [];
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+};
+
+const writePendingTiffinWrites = async (list: any[]): Promise<void> => {
+  try {
+    if (list.length === 0) {
+      await safeStorage.removeItem(PENDING_TIFFIN_KEY);
+    } else {
+      await safeStorage.setItem(PENDING_TIFFIN_KEY, JSON.stringify(list));
+    }
+  } catch (err) {
+    console.warn('[pendingTiffin] failed to persist queue:', err);
+  }
+};
+
+// ── Derived-row dedupe ─────────────────────────────────────────────────────
+// Mobile materialises tiffin/split bills as local expense rows (syncSource
+// 'tiffin'/'split'). When the server has already synced the same bill into the
+// member's tracker, keeping the local copy would DOUBLE-COUNT it. Match by
+// syncRefId (tiffin), splitExpenseId (split), or — for legacy server rows
+// without refs — by the same meal title + calendar day.
+const dateKeyOf = (d: any): string => {
+  const dt = d ? new Date(d) : null;
+  return dt && !Number.isNaN(dt.getTime()) ? dt.toISOString().slice(0, 10) : '';
+};
+
+const dropRowsDuplicatedByServer = (localRows: any[], serverRows: any[]): any[] => {
+  const rows = Array.isArray(serverRows) ? serverRows : [];
+  const serverSyncRefs = new Set(rows.map((e: any) => e?.syncRefId).filter(Boolean));
+  const serverSplitExpenseIds = new Set(
+    rows
+      .map((e: any) => String(e?.splitExpenseId || ''))
+      .filter((v: string) => v && v !== 'undefined' && v !== 'null')
+  );
+  // Any server-side tiffin row (canonical or legacy backfill) already covers
+  // that meal & day — the locally derived copy would double the category.
+  const serverTiffinKeys = new Set(
+    rows
+      .filter(
+        (e: any) =>
+          e &&
+          (e.syncSource === 'tiffin' || e.category === 'Tiffin Expense' || /^Tiffin:/i.test(e.title || ''))
+      )
+      .map((e: any) => `${e.title}::${dateKeyOf(e.date || e.createdAt)}`)
+  );
+  return (localRows || []).filter((lp: any) => {
+    const ref = String(lp?.syncRefId || '');
+    if (ref && serverSyncRefs.has(ref)) return false;
+    if (lp?.syncSource === 'split' && ref.startsWith('split_')) {
+      const expId = ref.split('_')[1];
+      if (expId && serverSplitExpenseIds.has(expId)) return false;
+    }
+    if (
+      lp?.syncSource === 'tiffin' &&
+      lp?.title &&
+      serverTiffinKeys.has(`${lp.title}::${dateKeyOf(lp.date || lp.createdAt)}`)
+    ) {
+      return false;
+    }
+    return true;
+  });
+};
+
+const replayPendingTiffinWrites = async (): Promise<void> => {
+  const pending = await readPendingTiffinWrites();
+  if (pending.length === 0) return;
+
+  const remaining: any[] = [];
+  for (const item of pending) {
+    if (!item?.payload?.groupId) continue;
+    const r = await request(`/api/tiffin/groups/${item.payload.groupId}/entries`, {
+      method: 'POST',
+      body: JSON.stringify(item.payload),
+    });
+
+    if (r.status === 201 || r.status === 200) {
+      // Swap the local pending copy for the authoritative server copy
+      if (item.localId) await db.tiffinEntries.deleteOne(item.localId);
+      if (r.data?._id) {
+        await db.tiffinEntries.insertOne({ ...r.data, groupId: item.payload.groupId });
+      }
+    } else if (r.status === 409) {
+      // The server already holds a record for this date/meal — drop the copy
+      if (item.localId) await db.tiffinEntries.deleteOne(item.localId);
+    } else if (r.status > 0) {
+      // Permanently rejected — don't retry forever, just log it
+      console.warn('[pendingTiffin] entry rejected by server:', r.error);
+    } else {
+      remaining.push(item); // still unreachable — keep for the next sync
+    }
+  }
+  await writePendingTiffinWrites(remaining);
+
+  // Re-derive the Expense Tracker rows now that the server copies exist
+  if (remaining.length !== pending.length) {
+    try {
+      await api.syncTiffinExpenses(true);
+    } catch (err) {
+      console.warn('[pendingTiffin] re-sync error:', err);
+    }
+  }
+};
+
 // ── Generic Network Request Client with Timeout ──────────────────────────────
 export async function request<T = any>(
   endpoint: string,
@@ -87,7 +202,9 @@ export async function request<T = any>(
 
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000);
+    // Generous timeout: Render's free tier cold-starts can exceed 15s, and a
+    // timeout here used to kick the app into its offline/mock fallback.
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
 
     const res = await fetch(url, {
       ...options,
@@ -390,19 +507,11 @@ export const api = {
       queryStr = `?${q.toString()}`;
     }
 
-    // If auto-sync is enabled, ensure synced items are up to date
-    try {
-      const authUser = cachedUser;
-      if (authUser?.autoSyncTiffin) {
-        api.syncTiffinExpenses(true).catch(() => {});
-      }
-      if (authUser?.autoSyncSplit) {
-        api.syncSplitExpenses(true).catch(() => {});
-      }
-    } catch (_) {}
-
     request(`/api/expenses${queryStr}`, { method: 'GET' }).then(async (res) => {
       if (res.status === 200 && Array.isArray(res.data)) {
+        const isFilteredQuery = Boolean(params?.category && params.category !== 'All') || Boolean(params?.search) || Boolean(params?.month && params.month !== 'all');
+        if (isFilteredQuery) return;
+
         const normalizedServerData = res.data.map((e: any) => {
           const catName = e.category && e.category !== 'Others'
             ? e.category
@@ -422,28 +531,21 @@ export const api = {
         const localPending = nonSeedLocal.filter(
           (e) => e.syncSource === 'tiffin' || e.syncSource === 'split' || e.syncSource === 'sms_auto' || e.isOfflinePending
         );
+        // Derived tiffin/split rows must not survive when the server already
+        // carries the same bill — otherwise every synced meal counts twice.
+        const dedupedPending = dropRowsDuplicatedByServer(localPending, normalizedServerData);
         const serverIds = new Set(normalizedServerData.map((e: any) => e._id || e.id));
 
-        const isFilteredQuery = Boolean(params?.category && params.category !== 'All') || Boolean(params?.search) || Boolean(params?.month && params.month !== 'all');
-        let finalExpenses: any[];
-
-        if (isFilteredQuery) {
-          const map = new Map<string, any>();
-          nonSeedLocal.forEach((e) => map.set(e._id || e.id, e));
-          normalizedServerData.forEach((e: any) => map.set(e._id || e.id, e));
-          finalExpenses = Array.from(map.values());
-        } else {
-          finalExpenses = [...normalizedServerData];
-          for (const lp of localPending) {
-            if (!serverIds.has(lp._id || lp.id)) {
-              finalExpenses.push(lp);
-            }
+        const finalExpenses: any[] = [...normalizedServerData];
+        for (const lp of dedupedPending) {
+          if (!serverIds.has(lp._id || lp.id)) {
+            finalExpenses.push(lp);
           }
         }
 
         finalExpenses.sort((a, b) => new Date(b.date || b.createdAt).getTime() - new Date(a.date || a.createdAt).getTime());
         await db.expenses.saveAll(finalExpenses);
-        dataEvents.emit('expenses_synced');
+        dataEvents.emit('expenses_synced', finalExpenses);
       }
     }).catch(() => {});
 
@@ -674,30 +776,34 @@ export const api = {
         return d >= startOfMonth && d <= endOfMonth;
       });
 
-      const budgetList = cats.map((cat) => {
-        const spent = monthExpenses
-          .filter((e) => e.category === cat.name)
-          .reduce((sum, e) => sum + (e.amount || 0), 0);
+      // Budgets are opt-in: only categories the user actually gave a limit to
+      const budgetList = cats
+        .filter((cat) => Number(cat.limit) > 0)
+        .map((cat) => {
+          const spent = monthExpenses
+            .filter((e) => e.category === cat.name)
+            .reduce((sum, e) => sum + (e.amount || 0), 0);
 
-        const limit = cat.limit || 5000;
-        const percentage = Math.round((spent / limit) * 100);
+          const limit = cat.limit;
+          const percentage = Math.round((spent / limit) * 100);
 
-        let status = 'normal';
-        if (percentage >= (cat.criticalThreshold || 95)) status = 'critical';
-        else if (percentage >= (cat.warningThreshold || 80)) status = 'warning';
+          let status = 'normal';
+          if (cat.alertEnabled && percentage >= (cat.alertPercent || 90)) status = 'warning';
+          else if (percentage >= (cat.criticalThreshold || 95)) status = 'critical';
+          else if (!cat.alertEnabled && percentage >= (cat.warningThreshold || 80)) status = 'warning';
 
-        return {
-          _id: cat._id,
-          categoryName: cat.name,
-          categoryColor: cat.color || '#2dd4bf',
-          categoryIcon: cat.icon || 'folder-outline',
-          spent,
-          limit,
-          percentage,
-          status,
-          remaining: Math.max(0, limit - spent),
-        };
-      });
+          return {
+            _id: cat._id,
+            categoryName: cat.name,
+            categoryColor: cat.color || '#2dd4bf',
+            categoryIcon: cat.icon || 'folder-outline',
+            spent,
+            limit,
+            percentage,
+            status,
+            remaining: Math.max(0, limit - spent),
+          };
+        });
 
       return { status: 200, data: budgetList };
     } catch (err: any) {
@@ -1030,7 +1136,13 @@ export const api = {
 
     try {
       const list = await db.tiffinEntries.getAll();
-      return { status: 200, data: list };
+      const monthEntries = month && month !== 'all'
+        ? list.filter((entry) => {
+            const date = new Date(entry.date || entry.createdAt);
+            return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 7) === month;
+          })
+        : list;
+      return { status: 200, data: monthEntries };
     } catch (err: any) {
       return { status: 500, error: err.message, data: [] };
     }
@@ -1089,14 +1201,19 @@ export const api = {
       if (detailsRes.status === 200 && detailsRes.data) {
         const list = detailsRes.data.allEntries || detailsRes.data.entries || [];
         if (Array.isArray(list) && list.length > 0) {
-          // Cache in local db.tiffinEntries
-          for (const item of list) {
-            const itemId = item._id || item.id;
-            const existing = await db.tiffinEntries.findById(itemId);
-            if (!existing) {
-              await db.tiffinEntries.insertOne({ ...item, groupId, _id: itemId, id: itemId });
-            }
-          }
+          // Mirror the server list into the local cache. Entries are REPLACED
+          // (not appended) so edits/deletions made on the web never linger as
+          // stale copies in the offline fallback.
+          const normalized = list.map((item: any) => ({
+            ...item,
+            groupId,
+            _id: item._id || item.id,
+            id: item._id || item.id,
+          }));
+          const otherGroups = await db.tiffinEntries.find(
+            (e) => String(e.groupId) !== String(groupId)
+          );
+          await db.tiffinEntries.saveAll([...otherGroups, ...normalized]);
           return { status: 200, data: list };
         }
       }
@@ -1130,11 +1247,19 @@ export const api = {
 
     if (res.status === 201 || res.status === 200) {
       entryDoc = res.data;
+    } else if (res.status >= 400) {
+      // The server rejected the write (e.g. a record for this date/meal
+      // already exists). Surface the reason instead of silently creating a
+      // local-only phantom entry that never syncs.
+      return { status: res.status, error: res.error || 'Failed to save tiffin entry' };
     }
 
-    // 2. Always persist into local db.tiffinEntries with complete fields
+    // 2. Persist a local mirror so the tracker works offline. When the server
+    // was simply unreachable (status 0) the copy is marked pending and
+    // replayed on the next successful sync.
+    const offline = !entryDoc;
     try {
-      const entryId = entryDoc?._id || entryDoc?.id || `entry_${Date.now()}`;
+      const entryId = entryDoc?._id || entryDoc?.id || `pending_${Date.now()}`;
       const localData = {
         _id: entryId,
         id: entryId,
@@ -1144,17 +1269,35 @@ export const api = {
         quantity: isNoMeal ? 0 : (data.quantity || data.count || 1),
         baseQuantity: isNoMeal ? 0 : (data.baseQuantity || 1),
         splitMemberIds: data.splitMemberIds || [],
+        participantMemberIds: data.splitMemberIds || [],
+        participantQuantities: data.extras || {},
         extras: data.extras || {},
         memberBills: data.memberBills || {},
         extraPrice: isNoMeal ? 0 : (data.extraPrice || 0),
         totalPrice: isNoMeal ? 0 : (data.totalPrice || 80),
+        totalCost: isNoMeal ? 0 : (data.totalPrice || 80),
         noTiffin: isNoMeal,
         notes: data.notes || '',
         date: data.date || new Date().toISOString(),
         participants: data.participants || [],
+        ...(offline ? { isOfflinePending: true } : {}),
       };
-      await db.tiffinEntries.insertOne(localData);
-      if (!entryDoc) entryDoc = localData;
+      const existingLocal = await db.tiffinEntries.findById(entryId);
+      if (existingLocal) {
+        await db.tiffinEntries.updateOne(entryId, localData);
+      } else {
+        await db.tiffinEntries.insertOne(localData);
+      }
+      if (offline) {
+        entryDoc = localData;
+        try {
+          const queue = await readPendingTiffinWrites();
+          queue.push({ localId: entryId, payload: data });
+          await writePendingTiffinWrites(queue);
+        } catch (queueErr) {
+          console.warn('[logTiffinMeal] queue error:', queueErr);
+        }
+      }
     } catch (err: any) {
       console.warn('[logTiffinMeal] local save error:', err);
     }
@@ -1187,6 +1330,12 @@ export const api = {
       body: JSON.stringify(data),
     });
 
+    // Server actively rejected the edit — surface it instead of pretending
+    // success while the ledger stays unchanged.
+    if (res.status >= 400) {
+      return { status: res.status, error: res.error || 'Failed to update tiffin entry' };
+    }
+
     try {
       await db.tiffinEntries.updateOne(entryId, data);
       const auth = await getStoredAuth();
@@ -1206,6 +1355,8 @@ export const api = {
     }
 
     if (res.status === 200) return res;
+    // Offline (status 0): keep the local edit; the next successful sync
+    // re-fetches the authoritative copy.
     return { status: 200, data: { ...data, _id: entryId } };
   },
 
@@ -1213,6 +1364,11 @@ export const api = {
     const res = await request(`/api/tiffin/groups/${groupId}/entries/${entryId}`, {
       method: 'DELETE',
     });
+
+    // Server actively rejected the delete — keep the record consistent
+    if (res.status >= 400) {
+      return { status: res.status, error: res.error || 'Failed to delete tiffin entry' };
+    }
 
     try {
       await db.tiffinEntries.deleteOne(entryId);
@@ -1437,7 +1593,6 @@ export const api = {
       if (!tiffinCat) {
         tiffinCat = await db.categories.insertOne({
           name: 'Tiffin Expense',
-          limit: 5000,
           color: '#ea580c',
           icon: 'restaurant-outline',
           isDefault: false,
@@ -1617,8 +1772,19 @@ export const api = {
         }
       }
 
+      // Don't double-count meals the server already recorded in the tracker:
+      // legacy backfill rows carry no syncRefId but the same title + day.
+      const coveredTiffinKeys = new Set(
+        nonTiffin
+          .filter((e) => e.category === 'Tiffin Expense' || /^Tiffin:/i.test(e.title || ''))
+          .map((e) => `${e.title}::${dateKeyOf(e.date || e.createdAt)}`)
+      );
+      const derivedRows = newSyncedList.filter(
+        (e) => !coveredTiffinKeys.has(`${e.title}::${dateKeyOf(e.date)}`)
+      );
+
       // Save non-tiffin + newly calculated split tiffin items
-      const finalExpenses = [...nonTiffin, ...newSyncedList];
+      const finalExpenses = [...nonTiffin, ...derivedRows];
       finalExpenses.sort(
         (a, b) => new Date(b.date || b.createdAt).getTime() - new Date(a.date || a.createdAt).getTime()
       );
@@ -1656,7 +1822,6 @@ export const api = {
       if (!splitCat) {
         splitCat = await db.categories.insertOne({
           name: 'Split Expense',
-          limit: 5000,
           color: '#8b5cf6',
           icon: 'people-outline',
           isDefault: false,
@@ -1785,12 +1950,12 @@ export const api = {
       await db.incomes.saveAll([]);
 
       const defaults = [
-        { _id: createObjectId(), name: 'Food & Dining', limit: 8000, color: '#A78BFA', icon: 'fast-food-outline', isDefault: true },
-        { _id: createObjectId(), name: 'Shopping', limit: 5000, color: '#84CC16', icon: 'cart-outline', isDefault: true },
-        { _id: createObjectId(), name: 'Travel & Commute', limit: 4000, color: '#38BDF8', icon: 'car-outline', isDefault: true },
-        { _id: createObjectId(), name: 'Bills & Utilities', limit: 6000, color: '#F59E0B', icon: 'flash-outline', isDefault: true },
-        { _id: createObjectId(), name: 'Entertainment', limit: 3000, color: '#F472B6', icon: 'film-outline', isDefault: true },
-        { _id: createObjectId(), name: 'Others', limit: 3000, color: '#9CA3AF', icon: 'ellipsis-horizontal-outline', isDefault: true },
+        { _id: createObjectId(), name: 'Food & Dining', color: '#A78BFA', icon: 'fast-food-outline', isDefault: true },
+        { _id: createObjectId(), name: 'Shopping', color: '#84CC16', icon: 'cart-outline', isDefault: true },
+        { _id: createObjectId(), name: 'Travel & Commute', color: '#38BDF8', icon: 'car-outline', isDefault: true },
+        { _id: createObjectId(), name: 'Bills & Utilities', color: '#F59E0B', icon: 'flash-outline', isDefault: true },
+        { _id: createObjectId(), name: 'Entertainment', color: '#F472B6', icon: 'film-outline', isDefault: true },
+        { _id: createObjectId(), name: 'Others', color: '#9CA3AF', icon: 'ellipsis-horizontal-outline', isDefault: true },
       ];
       await db.categories.saveAll(defaults);
 
@@ -1865,10 +2030,12 @@ export const api = {
         const localPending = nonSeedLocal.filter(
           (e) => e.syncSource === 'tiffin' || e.syncSource === 'split' || e.syncSource === 'sms_auto' || e.isOfflinePending
         );
+        // Drop derived rows the server already carries (double-count guard)
+        const dedupedPending = dropRowsDuplicatedByServer(localPending, resExpenses.data);
         const serverIds = new Set(resExpenses.data.map((e: any) => e._id || e.id));
 
         const merged = [...resExpenses.data];
-        for (const lp of localPending) {
+        for (const lp of dedupedPending) {
           if (!serverIds.has(lp._id || lp.id)) {
             merged.push(lp);
           }
@@ -1916,6 +2083,13 @@ export const api = {
       if (resNotifications.status === 200 && Array.isArray(resNotifications.data)) {
         await db.notifications.saveAll(resNotifications.data);
         stats.notifications = resNotifications.data.length;
+      }
+
+      // Replay tiffin meals that were logged while the server was unreachable
+      try {
+        await replayPendingTiffinWrites();
+      } catch (replayErr) {
+        console.warn('[syncUserData] pending tiffin replay error:', replayErr);
       }
 
       // Emit instant notifications so all screens update

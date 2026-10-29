@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -13,6 +13,7 @@ import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../../context/ThemeContext';
 import { api } from '../../services/api';
+import { fmtMoney } from '../../utils/money';
 import { AddTiffinModal } from '../../components/AddTiffinModal';
 
 export const TiffinTransactionsScreen = ({ navigation }: any) => {
@@ -26,36 +27,46 @@ export const TiffinTransactionsScreen = ({ navigation }: any) => {
   });
 
   const [transactions, setTransactions] = useState<any[]>([]);
+  const [transactionsMonth, setTransactionsMonth] = useState<string | null>(null);
   const [groups, setGroups] = useState<any[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState<string>('all');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [logModalVisible, setLogModalVisible] = useState(false);
+  const fetchRequestId = useRef(0);
 
   const fetchTransactions = useCallback(async () => {
+    const requestId = ++fetchRequestId.current;
     try {
       const [txRes, grpRes] = await Promise.all([
         api.getTiffinTransactions(selectedMonth),
         api.getTiffinGroups(),
       ]);
 
-      if (txRes.data && Array.isArray(txRes.data)) {
+      if (requestId === fetchRequestId.current && txRes.data && Array.isArray(txRes.data)) {
         setTransactions(txRes.data);
+        setTransactionsMonth(selectedMonth);
       }
-      if (grpRes.data && Array.isArray(grpRes.data)) {
+      if (requestId === fetchRequestId.current && grpRes.data && Array.isArray(grpRes.data)) {
         setGroups(grpRes.data);
       }
     } catch (err) {
       console.error('Error fetching tiffin transactions:', err);
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (requestId === fetchRequestId.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }, [selectedMonth]);
 
   useEffect(() => {
     fetchTransactions();
   }, [fetchTransactions]);
+
+  useEffect(() => () => {
+    fetchRequestId.current += 1;
+  }, []);
 
   const onRefresh = () => {
     setRefreshing(true);
@@ -80,13 +91,24 @@ export const TiffinTransactionsScreen = ({ navigation }: any) => {
     return date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
   };
 
-  const filteredTransactions = transactions.filter((tx) => {
+  const monthTransactions = transactionsMonth === selectedMonth ? transactions : [];
+  const hasTransactionsForSelectedMonth = transactionsMonth === selectedMonth;
+  const filteredTransactions = monthTransactions.filter((tx) => {
     if (selectedGroupId === 'all') return true;
     return (tx.groupId?._id || tx.groupId || tx.group?._id || tx.group) === selectedGroupId;
   });
 
-  const totalSpent = filteredTransactions.reduce((acc, tx) => acc + (tx.totalPrice || tx.totalCost || 0), 0);
-  const totalMeals = filteredTransactions.reduce((acc, tx) => acc + (tx.quantity || tx.count || 1), 0);
+  const totalSpent = filteredTransactions.reduce(
+    (acc, tx) => acc + (Number(tx.totalPrice ?? tx.totalCost) || 0),
+    0
+  );
+  const totalMeals = filteredTransactions.reduce(
+    (acc, tx) => {
+      const quantity = Number(tx.quantity ?? tx.count ?? 1);
+      return acc + (Number.isFinite(quantity) ? quantity : 1);
+    },
+    0
+  );
 
   const getMealBadge = (type: string) => {
     const clean = (type || 'lunch').toLowerCase();
@@ -155,11 +177,15 @@ export const TiffinTransactionsScreen = ({ navigation }: any) => {
       <View style={styles.kpiContainer}>
         <View style={[styles.kpiCard, { backgroundColor: theme.bgSurface, borderColor: theme.borderSubtle }]}>
           <Text style={[styles.kpiLabel, { color: theme.textMuted }]}>Total Month Spent</Text>
-          <Text style={[styles.kpiValue, { color: '#ea580c' }]}>₹{totalSpent.toLocaleString()}</Text>
+          <Text style={[styles.kpiValue, { color: '#ea580c' }]}>
+            {hasTransactionsForSelectedMonth ? `₹${fmtMoney(totalSpent)}` : '—'}
+          </Text>
         </View>
         <View style={[styles.kpiCard, { backgroundColor: theme.bgSurface, borderColor: theme.borderSubtle }]}>
           <Text style={[styles.kpiLabel, { color: theme.textMuted }]}>Total Tiffins</Text>
-          <Text style={[styles.kpiValue, { color: theme.textPrimary }]}>{totalMeals} Meals</Text>
+          <Text style={[styles.kpiValue, { color: theme.textPrimary }]}>
+            {hasTransactionsForSelectedMonth ? `${totalMeals} Meals` : '—'}
+          </Text>
         </View>
       </View>
 
@@ -296,7 +322,7 @@ export const TiffinTransactionsScreen = ({ navigation }: any) => {
                 </View>
 
                 <View style={styles.txRight}>
-                  <Text style={[styles.txPrice, { color: '#ea580c' }]}>₹{price}</Text>
+                  <Text style={[styles.txPrice, { color: '#ea580c' }]}>₹{fmtMoney(price)}</Text>
                   <Text style={[styles.txShare, { color: theme.textMuted }]}>Ledger</Text>
                 </View>
               </View>

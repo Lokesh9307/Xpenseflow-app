@@ -16,9 +16,9 @@ import {
 import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { api } from '../services/api';
-import { dataEvents } from '../services/dataEvents';
 import { useAuth } from '../context/AuthContext';
 import { DatePickerModal } from './DatePickerModal';
+import { fmtMoney } from '../utils/money';
 
 interface AddTiffinModalProps {
   visible: boolean;
@@ -36,6 +36,15 @@ const MEAL_TYPES = [
   { id: 'breakfast', label: 'Breakfast', icon: 'weather-sunset-up', color: '#EAB308' },
   { id: 'none', label: 'No Tiffin', icon: 'cancel', color: '#EF4444' },
 ];
+
+// Local calendar day as "YYYY-MM-DD". `toISOString()` is UTC, which shows
+// YESTERDAY's date for anyone between midnight and the UTC offset.
+const toLocalDateString = (d: Date = new Date()): string => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
 
 export const AddTiffinModal: React.FC<AddTiffinModalProps> = ({
   visible,
@@ -63,7 +72,7 @@ export const AddTiffinModal: React.FC<AddTiffinModalProps> = ({
   const [selectedMembers, setSelectedMembers] = useState<Record<string, boolean>>({});
 
   const [notes, setNotes] = useState('');
-  const [dateStr, setDateStr] = useState(new Date().toISOString().slice(0, 10));
+  const [dateStr, setDateStr] = useState(toLocalDateString());
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [loading, setLoading] = useState(false);
   const [fetching, setFetching] = useState(true);
@@ -77,7 +86,11 @@ export const AddTiffinModal: React.FC<AddTiffinModalProps> = ({
         setMealType(editingEntry.mealType || 'lunch');
         setIsNoTiffin(editingEntry.noTiffin || editingEntry.mealType === 'none');
         setBaseQuantity(editingEntry.baseQuantity || editingEntry.quantity || 1);
-        setExtrasMap(editingEntry.extras || {});
+        setExtrasMap(
+          Object.keys(editingEntry.extras || {}).length > 0
+            ? editingEntry.extras
+            : (editingEntry.participantQuantities || {})
+        );
         setNotes(editingEntry.notes || '');
         if (editingEntry.date) {
           setDateStr(new Date(editingEntry.date).toISOString().slice(0, 10));
@@ -86,7 +99,7 @@ export const AddTiffinModal: React.FC<AddTiffinModalProps> = ({
         if (initialGroupId) setSelectedGroupId(initialGroupId);
         if (initialMealType) setMealType(initialMealType.toLowerCase());
         setIsNoTiffin(initialNoTiffin || initialMealType?.toLowerCase() === 'none');
-        setDateStr(new Date().toISOString().slice(0, 10));
+        setDateStr(toLocalDateString());
         setExtrasMap({});
         setNotes('');
       }
@@ -99,7 +112,8 @@ export const AddTiffinModal: React.FC<AddTiffinModalProps> = ({
     setFetching(false);
     if (res.data && Array.isArray(res.data) && res.data.length > 0) {
       setGroups(res.data);
-      const activeGrp = res.data.find((g) => g._id === (selectedGroupId || initialGroupId)) || res.data[0];
+      const preferredId = editingEntry?.groupId || selectedGroupId || initialGroupId;
+      const activeGrp = res.data.find((g: any) => g._id === preferredId) || res.data[0];
       if (!selectedGroupId) setSelectedGroupId(activeGrp._id);
 
       // Initialize all members as sharing the base tiffins by default
@@ -108,10 +122,31 @@ export const AddTiffinModal: React.FC<AddTiffinModalProps> = ({
       members.forEach((m: any, idx: number) => {
         initialMap[String(m._id || m.userId || idx)] = true;
       });
+
+      // Edit mode: restore WHO was sharing from the stored entry — web entries
+      // only carry `participantMemberIds`, mobile ones carry `splitMemberIds`.
+      if (editingEntry) {
+        const entrySplitIds = [
+          ...(Array.isArray(editingEntry.splitMemberIds) ? editingEntry.splitMemberIds : []),
+          ...(Array.isArray(editingEntry.participantMemberIds) ? editingEntry.participantMemberIds : []),
+        ].map(String);
+        if (entrySplitIds.length > 0) {
+          members.forEach((m: any, idx: number) => {
+            const key = String(m._id || m.userId || idx);
+            initialMap[key] =
+              entrySplitIds.includes(key) ||
+              entrySplitIds.includes(String(idx)) ||
+              (m.userId ? entrySplitIds.includes(String(m.userId)) : false);
+          });
+        }
+      }
       setSelectedMembers(initialMap);
 
-      // Default base tiffins to either group count or 3
-      setBaseQuantity(Math.max(1, Math.min(members.length, 3)));
+      // Default base tiffins to either group count or 3 (edit mode keeps the
+      // entry's own value, restored by the visibility effect)
+      if (!editingEntry) {
+        setBaseQuantity(Math.max(1, Math.min(members.length, 3)));
+      }
     }
   };
 
@@ -236,16 +271,6 @@ export const AddTiffinModal: React.FC<AddTiffinModalProps> = ({
       setExtrasMap({});
       setNotes('');
 
-      // Instant 0ms synchronization: sync into Expense Tracker immediately
-      try {
-        await api.syncTiffinExpenses(true);
-        dataEvents.emit('expense_added');
-        dataEvents.emit('category_updated');
-        dataEvents.emit('refresh_data');
-      } catch (e) {
-        console.warn('[AddTiffinModal] sync error:', e);
-      }
-
       onSuccess();
       onClose();
     }
@@ -326,12 +351,12 @@ export const AddTiffinModal: React.FC<AddTiffinModalProps> = ({
                 {isNoTiffin ? 'NO TIFFIN RECORD' : 'TOTAL MEAL BILL FOR TODAY'}
               </Text>
               <Text style={[styles.liveTotalValue, isNoTiffin && { color: '#EF4444' }]}>
-                ₹{totalCalculatedCost}
+                ₹{fmtMoney(totalCalculatedCost)}
               </Text>
               <Text style={[styles.liveTotalSub, { color: theme.textMuted }]}>
                 {isNoTiffin
-                  ? 'At that time on that day no one took the tiffin · ₹0'
-                  : `${totalTiffinsCount} tiffins total (${baseQuantity} shared + ${totalExtraTiffins} extra) at ₹${unitPrice}/each`}
+                  ? 'At that time on that day no one took the tiffin · ₹0.00'
+                  : `${totalTiffinsCount} tiffins total (${baseQuantity} shared + ${totalExtraTiffins} extra) at ₹${fmtMoney(unitPrice)}/each`}
               </Text>
             </View>
 
@@ -342,7 +367,7 @@ export const AddTiffinModal: React.FC<AddTiffinModalProps> = ({
                   No one took tiffin today
                 </Text>
                 <Text style={[styles.switchSub, { color: theme.textMuted }]}>
-                  Record an official zero-cost day entry (₹0)
+                  Record an official zero-cost day entry (₹0.00)
                 </Text>
               </View>
               <Switch
@@ -409,7 +434,7 @@ export const AddTiffinModal: React.FC<AddTiffinModalProps> = ({
                       Base Tiffins Shared Evenly
                     </Text>
                     <Text style={[styles.sectionSubText, { color: theme.textMuted }]}>
-                      {baseQuantity} tiffins ÷ {splitMemberCount} members = ₹{baseSharePerPerson}/person
+                      {baseQuantity} tiffins ÷ {splitMemberCount} members = ₹{fmtMoney(baseSharePerPerson)}/person
                     </Text>
                   </View>
 
@@ -446,7 +471,7 @@ export const AddTiffinModal: React.FC<AddTiffinModalProps> = ({
                   </Text>
                 </View>
                 <Text style={[styles.sectionExplainer, { color: theme.textMuted }]}>
-                  Any extra tiffin assigned to a member is billed at full price (₹{unitPrice}) to that person only.
+                  Any extra tiffin assigned to a member is billed at full price (₹{fmtMoney(unitPrice)}) to that person only.
                 </Text>
 
                 {members.map((m: any, idx: number) => {
@@ -489,8 +514,8 @@ export const AddTiffinModal: React.FC<AddTiffinModalProps> = ({
                             {m.name || 'Member'}
                           </Text>
                           <Text style={[styles.memberBillText, { color: theme.textMuted }]}>
-                            {isSharing ? `Base ₹${baseSharePerPerson}` : 'Not eating'}
-                            {extraCount > 0 ? ` + Extra (${extraCount}×₹${unitPrice} = ₹${extraCount * unitPrice})` : ''}
+                            {isSharing ? `Base ₹${fmtMoney(baseSharePerPerson)}` : 'Not eating'}
+                            {extraCount > 0 ? ` + Extra (${extraCount}×₹${fmtMoney(unitPrice)} = ₹${fmtMoney(extraCount * unitPrice)})` : ''}
                           </Text>
                         </View>
                       </TouchableOpacity>
@@ -521,7 +546,7 @@ export const AddTiffinModal: React.FC<AddTiffinModalProps> = ({
 
                         {/* Calculated Share for this person */}
                         <Text style={[styles.personFinalDue, { color: '#F97316' }]}>
-                          ₹{mBill.total}
+                          ₹{fmtMoney(mBill.total)}
                         </Text>
                       </View>
                     </View>
@@ -602,10 +627,10 @@ export const AddTiffinModal: React.FC<AddTiffinModalProps> = ({
                   <Feather name="check" size={18} color="#ffffff" />
                   <Text style={styles.saveBtnText}>
                     {editingEntry
-                      ? `Update Record (Total ₹${totalCalculatedCost})`
+                      ? `Update Record (Total ₹${fmtMoney(totalCalculatedCost)})`
                       : isNoTiffin
-                      ? 'Confirm No Tiffin (₹0)'
-                      : `Confirm & Save (Total ₹${totalCalculatedCost})`}
+                      ? 'Confirm No Tiffin (₹0.00)'
+                      : `Confirm & Save (Total ₹${fmtMoney(totalCalculatedCost)})`}
                   </Text>
                 </>
               )}

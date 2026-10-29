@@ -18,6 +18,7 @@ import { api, getStaticGroupCode } from '../../services/api';
 import { GroupConfigModal } from '../../components/GroupConfigModal';
 import { generateAndShareTiffinReportPdf } from '../../services/tiffinPdfService';
 import { dataEvents } from '../../services/dataEvents';
+import { fmtMoney } from '../../utils/money';
 
 export const TiffinSettingsScreen = ({ navigation }: any) => {
   const { theme, isDark } = useTheme();
@@ -389,7 +390,7 @@ export const TiffinSettingsScreen = ({ navigation }: any) => {
 
                   <View style={styles.groupCardMetaRow}>
                     <Text style={[styles.groupMetaText, { color: theme.textMuted }]}>
-                      ₹{rate}/meal • {memberCount} {memberCount === 1 ? 'member' : 'members'}
+                      ₹{fmtMoney(rate)}/meal • {memberCount} {memberCount === 1 ? 'member' : 'members'}
                     </Text>
                   </View>
                 </TouchableOpacity>
@@ -508,11 +509,11 @@ export const TiffinSettingsScreen = ({ navigation }: any) => {
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                   <Ionicons name="pricetag-outline" size={16} color="#ea580c" />
                   <Text style={[styles.priceSyncTitle, { color: '#ea580c' }]}>
-                    Auto-Fetched Group Rate: ₹{activeRate}.00 / meal
+                    Auto-Fetched Group Rate: ₹{fmtMoney(activeRate)} / meal
                   </Text>
                 </View>
                 <Text style={[styles.priceSyncSub, { color: theme.textMuted }]}>
-                  Total daily estimated cost: ₹{dailyCost}.00 ({dailyTiffinCount} × ₹{activeRate})
+                  Total daily estimated cost: ₹{fmtMoney(dailyCost)} ({dailyTiffinCount} × ₹{fmtMoney(activeRate)})
                 </Text>
               </View>
 

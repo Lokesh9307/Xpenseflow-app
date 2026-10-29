@@ -20,19 +20,8 @@ import { api } from '../../services/api';
 import { dataEvents } from '../../services/dataEvents';
 import { AddExpenseModal } from '../../components/AddExpenseModal';
 
-const CATEGORIES = [
-  'All',
-  'Food & Dining',
-  'Shopping',
-  'Travel & Commute',
-  'Bills & Utilities',
-  'Entertainment',
-  'Health & Fitness',
-  'Groceries',
-  'Education',
-  'Investment',
-  'Others',
-];
+// NOTE: filter chips are built from the user's REAL categories at runtime
+// (see filterCategories state) — no hardcoded category list here.
 
 const CATEGORY_ICONS: Record<string, string> = {
   'Food & Dining': 'restaurant-outline',
@@ -105,6 +94,37 @@ export const ExpensesScreen = ({ navigation }: any) => {
   const [search, setSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [modalVisible, setModalVisible] = useState(false);
+  // The user's REAL categories for the filter chips — no hardcoded/default list
+  // so custom categories (e.g. "Tiffin Expense") always appear too.
+  const [filterCategories, setFilterCategories] = useState<string[]>(['All']);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadChips = async () => {
+      try {
+        const res = await api.getCategories();
+        const names = Array.isArray(res.data)
+          ? Array.from(
+              new Set<string>(
+                res.data.map((c: any) => c?.name).filter(Boolean)
+              )
+            )
+          : [];
+        if (cancelled) return;
+        setFilterCategories(['All', ...names]);
+        // If the selected chip no longer exists, fall back to "All"
+        setSelectedCategory((prev) =>
+          prev === 'All' || names.includes(prev) ? prev : 'All'
+        );
+      } catch (_) {}
+    };
+    loadChips();
+    const unsub = dataEvents.on('category_updated', loadChips);
+    return () => {
+      cancelled = true;
+      unsub();
+    };
+  }, []);
 
   const fetchExpenses = useCallback(async () => {
     try {
@@ -162,12 +182,38 @@ export const ExpensesScreen = ({ navigation }: any) => {
       );
     });
 
+    const unsubSynced = dataEvents.on('expenses_synced', (syncedExpenses: any[]) => {
+      if (!Array.isArray(syncedExpenses)) return;
+
+      let list = syncedExpenses;
+      if (selectedMonth && selectedMonth !== 'all') {
+        list = list.filter((e) => {
+          const date = new Date(e.date || e.createdAt);
+          return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 7) === selectedMonth;
+        });
+      }
+      if (selectedCategory !== 'All') {
+        const category = selectedCategory.toLowerCase().trim();
+        list = list.filter((e) => (e.category || '').toLowerCase().trim() === category);
+      }
+      if (search.trim()) {
+        const query = search.trim().toLowerCase();
+        list = list.filter(
+          (e) =>
+            e.title?.toLowerCase().includes(query) ||
+            e.category?.toLowerCase().includes(query)
+        );
+      }
+      setExpenses(list);
+    });
+
     return () => {
       unsubAdded();
       unsubDeleted();
       unsubUpdated();
+      unsubSynced();
     };
-  }, [selectedMonth]);
+  }, [search, selectedCategory, selectedMonth]);
 
   const onRefresh = () => {
     setRefreshing(true);
@@ -310,7 +356,7 @@ export const ExpensesScreen = ({ navigation }: any) => {
       {/* Category Pills Filter */}
       <View style={styles.chipsRow}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsScroll}>
-          {CATEGORIES.map((cat) => {
+          {filterCategories.map((cat) => {
             const isSelected = selectedCategory === cat;
             return (
               <TouchableOpacity

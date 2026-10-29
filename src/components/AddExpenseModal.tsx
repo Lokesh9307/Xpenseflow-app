@@ -15,6 +15,7 @@ import {
 import { Feather, Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { api } from '../services/api';
+import { DatePickerModal } from './DatePickerModal';
 
 interface AddExpenseModalProps {
   visible: boolean;
@@ -44,6 +45,13 @@ const PAYMENT_MODES = [
   { id: 'Net Banking', label: 'Net Banking', icon: 'business-outline' },
 ];
 
+const toLocalDateString = (date: Date = new Date()): string => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
 export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
   visible,
   onClose,
@@ -70,12 +78,50 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
   const [title, setTitle] = useState('');
   const [category, setCategory] = useState('Food & Dining');
   const [paymentMethod, setPaymentMethod] = useState('UPI');
+  const [date, setDate] = useState(toLocalDateString());
+  const [showDatePicker, setShowDatePicker] = useState(false);
   const [notes, setNotes] = useState('');
   const [loading, setLoading] = useState(false);
+  // The user's ACTUAL categories (from their account) — the static list is
+  // only a fallback until the fetch resolves.
+  const [categoryOptions, setCategoryOptions] = useState(CATEGORIES);
 
   useEffect(() => {
     if (initialAmount) setAmount(initialAmount);
   }, [initialAmount]);
+
+  useEffect(() => {
+    if (visible) {
+      setDate(toLocalDateString());
+      setShowDatePicker(false);
+    }
+  }, [visible]);
+
+  useEffect(() => {
+    if (!visible) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.getCategories();
+        const list = Array.isArray(res.data)
+          ? res.data.filter((c: any) => c && c.name)
+          : [];
+        if (!cancelled && list.length > 0) {
+          const mapped = list.map((c: any) => ({
+            name: c.name,
+            icon: c.icon || 'cube-outline',
+          }));
+          setCategoryOptions(mapped);
+          setCategory((prev) =>
+            mapped.some((c) => c.name === prev) ? prev : mapped[0].name
+          );
+        }
+      } catch (_) {}
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [visible]);
 
   const handleSave = async () => {
     const parsedAmount = parseFloat(amount);
@@ -95,7 +141,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
       amount: parsedAmount,
       category,
       paymentMethod,
-      date: new Date().toISOString(),
+      date: new Date(`${date}T00:00:00.000Z`).toISOString(),
       notes: notes.trim(),
     });
     setLoading(false);
@@ -186,7 +232,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
             {/* Category selection */}
             <Text style={[styles.sectionLabel, { color: t.textMuted }]}>CATEGORY</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipsScroll}>
-              {CATEGORIES.map((cat) => {
+              {categoryOptions.map((cat) => {
                 const isSelected = category === cat.name;
                 return (
                   <TouchableOpacity
@@ -258,6 +304,35 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
                 );
               })}
             </View>
+
+            {/* Date */}
+            <Text style={[styles.sectionLabel, { color: t.textMuted }]}>DATE</Text>
+            <TouchableOpacity
+              style={[
+                styles.textInput,
+                styles.datePickerButton,
+                { backgroundColor: t.inputBg, borderColor: t.inputBorder },
+              ]}
+              onPress={() => setShowDatePicker(true)}
+              activeOpacity={0.75}
+            >
+              <Feather name="calendar" size={16} color={t.accentTeal} />
+              <Text style={[styles.datePickerText, { color: t.textPrimary }]}>
+                {new Date(`${date}T00:00:00`).toLocaleDateString('en-US', {
+                  weekday: 'short',
+                  month: 'short',
+                  day: 'numeric',
+                  year: 'numeric',
+                })}
+              </Text>
+              <Feather name="chevron-down" size={18} color={t.textMuted} />
+            </TouchableOpacity>
+            <DatePickerModal
+              visible={showDatePicker}
+              initialDate={date}
+              onClose={() => setShowDatePicker(false)}
+              onSelectDate={setDate}
+            />
 
             {/* Optional Notes */}
             <Text style={[styles.sectionLabel, { color: t.textMuted }]}>NOTES (OPTIONAL)</Text>
@@ -391,6 +466,16 @@ const styles = StyleSheet.create({
   textArea: {
     height: 64,
     textAlignVertical: 'top',
+  },
+  datePickerButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  datePickerText: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '600',
   },
   chipsScroll: {
     flexDirection: 'row',

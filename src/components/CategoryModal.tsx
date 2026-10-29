@@ -153,10 +153,11 @@ export const CategoryModal: React.FC<CategoryModalProps> = ({
   };
 
   const [name, setName] = useState(initialCategory?.name || '');
+  // Budget limit is OPTIONAL — blank means "no budget for this category"
   const [monthlyLimit, setMonthlyLimit] = useState(
     initialCategory?.limit || initialCategory?.monthlyLimit
       ? String(initialCategory.limit || initialCategory.monthlyLimit)
-      : '5000'
+      : ''
   );
   const [selectedIcon, setSelectedIcon] = useState(resolveInitialIcon(initialCategory));
   const [searchQuery, setSearchQuery] = useState('');
@@ -170,12 +171,12 @@ export const CategoryModal: React.FC<CategoryModalProps> = ({
       setMonthlyLimit(
         initialCategory.limit || initialCategory.monthlyLimit
           ? String(initialCategory.limit || initialCategory.monthlyLimit)
-          : '5000'
+          : ''
       );
       setSelectedIcon(resolveInitialIcon(initialCategory));
     } else {
       setName('');
-      setMonthlyLimit('5000');
+      setMonthlyLimit('');
       setSelectedIcon('Food & Dining');
     }
     setSearchQuery('');
@@ -211,9 +212,11 @@ export const CategoryModal: React.FC<CategoryModalProps> = ({
       return;
     }
 
-    const limitNum = parseFloat(monthlyLimit);
-    if (isNaN(limitNum) || limitNum <= 0) {
-      Alert.alert('Invalid Limit', 'Please enter a valid monthly budget limit');
+    // Budget is optional — only validate when the user typed something
+    const trimmedLimit = monthlyLimit.trim();
+    const limitNum = trimmedLimit === '' ? null : parseFloat(trimmedLimit);
+    if (limitNum !== null && (isNaN(limitNum) || limitNum <= 0)) {
+      Alert.alert('Invalid Limit', 'Enter a positive amount, or leave it blank for no budget');
       return;
     }
 
@@ -386,7 +389,7 @@ export const CategoryModal: React.FC<CategoryModalProps> = ({
                   {name.trim() || selectedIcon}
                 </Text>
                 <Text style={[styles.previewSub, { color: subText }]}>
-                  Limit: ₹{(parseFloat(monthlyLimit) || 0).toLocaleString()} / month
+                  {monthlyLimit.trim() === '' ? 'No budget set' : `Limit: ₹${(parseFloat(monthlyLimit) || 0).toLocaleString()} / month`}
                 </Text>
               </View>
               <View
@@ -421,14 +424,14 @@ export const CategoryModal: React.FC<CategoryModalProps> = ({
               />
 
               <Text style={[styles.inputLabel, { color: subText }]}>
-                MONTHLY BUDGET LIMIT (₹)
+                MONTHLY BUDGET LIMIT (₹) — OPTIONAL
               </Text>
               <TextInput
                 style={[
                   styles.textInput,
                   { backgroundColor: inputBg, borderColor: inputBorder, color: textCol },
                 ]}
-                placeholder="5000"
+                placeholder="Leave blank for no budget"
                 placeholderTextColor={subText}
                 keyboardType="numeric"
                 value={monthlyLimit}

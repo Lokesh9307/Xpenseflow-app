@@ -20,7 +20,6 @@ type SmsCallback = (message: SmsMessage) => void;
 
 export interface SmsPermissionResult {
   hasReceiveSms: boolean;
-  hasReadSms: boolean;
   isGranted: boolean;
 }
 
@@ -53,39 +52,27 @@ class SmsListenerService {
   }
 
   /**
-   * Query Android OS for actual SMS permission status (RECEIVE_SMS and READ_SMS).
+   * Query Android OS for the permission required by the SMS broadcast receiver.
    * Does not rely on cached or stored booleans.
    */
   async getDetailedPermissions(): Promise<SmsPermissionResult> {
     if (Platform.OS !== 'android') {
-      return { hasReceiveSms: false, hasReadSms: false, isGranted: false };
+      return { hasReceiveSms: false, isGranted: false };
     }
 
     try {
       const hasReceiveSms = await PermissionsAndroid.check(
         PermissionsAndroid.PERMISSIONS.RECEIVE_SMS
       ).catch(() => false);
-
-      let hasReadSms = false;
-      try {
-        hasReadSms = await PermissionsAndroid.check(
-          PermissionsAndroid.PERMISSIONS.READ_SMS
-        );
-      } catch {
-        hasReadSms = false;
-      }
-
-      // In Android, RECEIVE_SMS is required for broadcast listener.
-      // On some devices, the SMS runtime permission group grants both or reports READ_SMS.
-      const isGranted = hasReceiveSms || hasReadSms;
+      const isGranted = hasReceiveSms;
       console.log(
-        `[SmsListener] Permission check: RECEIVE_SMS=${hasReceiveSms}, READ_SMS=${hasReadSms}, isGranted=${isGranted}`
+        `[SmsListener] Permission check: RECEIVE_SMS=${hasReceiveSms}, isGranted=${isGranted}`
       );
 
-      return { hasReceiveSms, hasReadSms, isGranted };
+      return { hasReceiveSms, isGranted };
     } catch (err) {
       console.error('[SmsListener] Error querying SMS permissions:', err);
-      return { hasReceiveSms: false, hasReadSms: false, isGranted: false };
+      return { hasReceiveSms: false, isGranted: false };
     }
   }
 
@@ -153,10 +140,9 @@ class SmsListenerService {
         return { success: false, error: 'permission_denied' };
       }
 
-      // Tell native module to start forwarding events
-      await SmsListenerModule.startListening();
-
-      // Subscribe to native events
+      // Subcribe BEFORE telling native to start so no event is missed
+      // if an SMS arrives in the gap between startListening() and
+      // addListener().
       if (this.subscription) {
         this.subscription.remove();
       }
@@ -167,6 +153,10 @@ class SmsListenerService {
           this.notifyListeners(event as SmsMessage);
         }
       );
+
+      // Tell native module to start forwarding events (also arms the
+      // native-side persisted queue & heads-up notifications)
+      await SmsListenerModule.startListening();
 
       this._isListening = true;
       console.log('[SmsListener] Native listener successfully started');
@@ -208,6 +198,31 @@ class SmsListenerService {
     }
 
     this._isListening = false;
+  }
+
+  /**
+   * Drain the native-side SMS queue.
+   *
+   * Messages received while the app was killed/in background are persisted
+   * natively and returned here (the native queue is cleared on pull).
+   * Each one should be parsed, stored as 'pending' and surfaced through the
+   * review bottom sheet — never added as an expense automatically.
+   */
+  async pullQueuedSms(): Promise<SmsMessage[]> {
+    if (Platform.OS !== 'android' || !SmsListenerModule) return [];
+
+    try {
+      const raw: any = await SmsListenerModule.pullQueuedSms();
+      if (Array.isArray(raw)) return raw as SmsMessage[];
+      // Newer RN sometimes resolves WritableNativeArray as an object; normalise
+      if (Array.isArray(raw?.message)) {
+        return raw.message as SmsMessage[];
+      }
+      return [];
+    } catch (err) {
+      console.error('[SmsListener] Failed to pull queued SMS:', err);
+      return [];
+    }
   }
 
   /**

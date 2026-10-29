@@ -1,6 +1,7 @@
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
+import { fmtMoney } from '../utils/money';
 
 export interface TiffinReportData {
   groupName: string;
@@ -50,9 +51,9 @@ export const generateAndShareTiffinReportPdf = async (data: TiffinReportData): P
   const memberRowsHtml = resolvedMembers
     .map((m: any, idx: number) => {
       const extraCount = m.extraTiffins > 0 ? `+${m.extraTiffins}` : '-';
-      const extraAmt = m.extraTotal > 0 ? `₹${Math.round(m.extraTotal)}` : '₹0';
-      const baseAmt = `₹${Math.round(m.baseTotal || 0)}`;
-      const totalDue = `₹${Math.round(m.totalDue || 0).toLocaleString('en-IN')}`;
+      const extraAmt = m.extraTotal > 0 ? `₹${fmtMoney(m.extraTotal)}` : '₹0.00';
+      const baseAmt = `₹${fmtMoney(m.baseTotal)}`;
+      const totalDue = `₹${fmtMoney(m.totalDue)}`;
 
       return `
         <tr style="background-color: ${idx % 2 === 0 ? '#ffffff' : '#f9fafb'}; border-bottom: 1px solid #e5e7eb;">
@@ -108,7 +109,7 @@ export const generateAndShareTiffinReportPdf = async (data: TiffinReportData): P
           <td style="padding: 9px 12px; text-align: center; color: #374151;">${qtyText}</td>
           <td style="padding: 9px 12px; font-size: 12px; color: #4b5563;">${extraDetails}</td>
           <td style="padding: 9px 12px; font-size: 12px; color: #6b7280;">${e.notes ? e.notes : (isSkipped ? 'No one took tiffin' : '-')}</td>
-          <td style="padding: 9px 12px; text-align: right; font-weight: 700; color: ${isSkipped ? '#9ca3af' : '#111827'};">₹${e.totalPrice || 0}</td>
+          <td style="padding: 9px 12px; text-align: right; font-weight: 700; color: ${isSkipped ? '#9ca3af' : '#111827'};">₹${fmtMoney(e.totalPrice ?? e.totalCost ?? 0)}</td>
         </tr>
       `;
     })
@@ -276,7 +277,7 @@ export const generateAndShareTiffinReportPdf = async (data: TiffinReportData): P
         <!-- 4 Summary Metrics -->
         <div class="metrics-grid">
           <div class="metric-card">
-            <div class="metric-val">₹${activeRate}</div>
+            <div class="metric-val">₹${fmtMoney(activeRate)}</div>
             <div class="metric-lbl">Rate / Meal</div>
           </div>
           <div class="metric-card">
@@ -284,7 +285,7 @@ export const generateAndShareTiffinReportPdf = async (data: TiffinReportData): P
             <div class="metric-lbl">Total Meals</div>
           </div>
           <div class="metric-card">
-            <div class="metric-val">₹${totalCost.toLocaleString('en-IN')}</div>
+            <div class="metric-val">₹${fmtMoney(totalCost)}</div>
             <div class="metric-lbl">Total Group Bill</div>
           </div>
           <div class="metric-card">
@@ -311,7 +312,7 @@ export const generateAndShareTiffinReportPdf = async (data: TiffinReportData): P
             ${memberRowsHtml || '<tr><td colspan="6" style="padding: 16px; text-align: center; color: #9ca3af;">No member expenses recorded for this month.</td></tr>'}
             <tr class="total-footer">
               <td colspan="5" style="padding: 12px; font-size: 13px; color: #111827;">Total Group Due for ${monthLabel}:</td>
-              <td style="padding: 12px; text-align: right; font-size: 16px; color: #ea580c;">₹${totalCost.toLocaleString('en-IN')}</td>
+              <td style="padding: 12px; text-align: right; font-size: 16px; color: #ea580c;">₹${fmtMoney(totalCost)}</td>
             </tr>
           </tbody>
         </table>

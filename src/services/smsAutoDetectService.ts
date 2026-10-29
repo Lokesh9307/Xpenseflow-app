@@ -15,6 +15,7 @@ import { smsListener, SmsMessage } from './smsListener';
 import { parseSmsTransaction } from './smsTransactionParser';
 import {
   storeDetectedTransaction,
+  getPendingTransactions,
   getSmsSettings,
   updateSmsSettings,
   SmsAutoDetectSettings,
@@ -23,6 +24,7 @@ import { dataEvents } from './dataEvents';
 import {
   setupNotificationChannel,
   requestNotificationPermission,
+  notifyDetectedTransaction,
 } from './smsNotificationService';
 
 export interface SmsStartResult {
@@ -35,6 +37,8 @@ class SmsAutoDetectService {
   private _isInitialized = false;
   private _isRunning = false;
   private unsubscribe: (() => void) | null = null;
+  /** Transactions surfaced to the UI in this app session (prevents double prompts) */
+  private notifiedTxnIds = new Set<string>();
 
   /**
    * Initialize the service. Should be called once at app startup.
@@ -121,6 +125,42 @@ class SmsAutoDetectService {
     // (non-blocking — we don't fail if the user denies notification permission)
     setupNotificationChannel().catch(() => {});
     requestNotificationPermission().catch(() => {});
+
+    // Recover SMS received while the app was killed/in background.
+    // They were persisted natively; parse each and queue the review
+    // bottom sheet. Dedup ensures already-stored ones are skipped.
+    try {
+      const queued = await smsListener.pullQueuedSms();
+      if (queued.length > 0) {
+        console.log(
+          `[SmsAutoDetect] Draining ${queued.length} SMS queued natively while app was inactive`
+        );
+        for (const msg of queued) {
+          await this.handleSms(msg);
+        }
+      }
+    } catch (err) {
+      console.warn('[SmsAutoDetect] Failed to drain native SMS queue:', err);
+    }
+
+    // Re-queue pending transactions detected in the last 24h that were
+    // never reviewed (e.g. user closed the bottom sheet previously).
+    // Nothing is ever added automatically — the user must review.
+    try {
+      const pending = (await getPendingTransactions())
+        .filter((t) => !this.notifiedTxnIds.has(t._id))
+        .filter((t) => {
+          const ageMs = Date.now() - new Date(t.detectedAt).getTime();
+          return ageMs < 24 * 60 * 60 * 1000;
+        })
+        .slice(0, 3);
+      for (const txn of pending) {
+        this.notifiedTxnIds.add(txn._id);
+        await notifyDetectedTransaction(txn);
+      }
+    } catch (err) {
+      console.warn('[SmsAutoDetect] Failed to re-queue pending reviews:', err);
+    }
 
     // Update settings
     await updateSmsSettings({ enabled: true });

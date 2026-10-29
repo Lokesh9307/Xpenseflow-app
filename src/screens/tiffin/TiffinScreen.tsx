@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -24,6 +24,7 @@ import { GroupConfigModal } from '../../components/GroupConfigModal';
 import { generateAndShareTiffinReportPdf } from '../../services/tiffinPdfService';
 import { CommonAppHeader } from '../../components/CommonAppHeader';
 import { dataEvents } from '../../services/dataEvents';
+import { fmtMoney } from '../../utils/money';
 
 const { width } = Dimensions.get('window');
 
@@ -40,17 +41,23 @@ export const TiffinScreen = () => {
   // Selected Group and Data
   const [groups, setGroups] = useState<any[]>([]);
   const [selectedGroup, setSelectedGroup] = useState<any>(null);
-  const [groupDetails, setGroupDetails] = useState<any>(null);
+  const [groupDetailsState, setGroupDetailsState] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [groupLoading, setGroupLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [generatingPdf, setGeneratingPdf] = useState(false);
+  const groupDetailsRequestId = useRef(0);
 
   // Month navigation (Defaults to current month YYYY-MM; auto-resets on 1st of every month!)
   const [selectedMonth, setSelectedMonth] = useState(() => {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   });
+  const groupDetails =
+    groupDetailsState?.groupId === String(selectedGroup?._id || '') &&
+    groupDetailsState?.monthKey === selectedMonth
+      ? groupDetailsState.data
+      : null;
 
   // Active view tab: 'member_logs' | 'monthly_ledger'
   const [activeTab, setActiveTab] = useState<'member_logs' | 'monthly_ledger'>('member_logs');
@@ -116,16 +123,23 @@ export const TiffinScreen = () => {
 
   // Fetch group details for the selected month
   const fetchGroupDetails = useCallback(async (groupId: string, monthKey: string) => {
+    const requestId = ++groupDetailsRequestId.current;
     setGroupLoading(true);
     try {
       const res = await api.getTiffinGroupDetails(groupId, monthKey);
-      if (res.data) {
-        setGroupDetails(res.data);
+      if (res.data && requestId === groupDetailsRequestId.current) {
+        setGroupDetailsState({
+          groupId: String(groupId),
+          monthKey,
+          data: res.data,
+        });
       }
     } catch (err) {
       console.error('Error loading group details:', err);
     } finally {
-      setGroupLoading(false);
+      if (requestId === groupDetailsRequestId.current) {
+        setGroupLoading(false);
+      }
     }
   }, []);
 
@@ -138,6 +152,10 @@ export const TiffinScreen = () => {
       fetchGroupDetails(selectedGroup._id, selectedMonth);
     }
   }, [selectedGroup, selectedMonth, fetchGroupDetails]);
+
+  useEffect(() => () => {
+    groupDetailsRequestId.current += 1;
+  }, []);
 
   // Listen to Bottom Navbar action buttons for Tiffin (Add tiffin, Join group, Create new group, Tiffin settings)
   useEffect(() => {
@@ -259,10 +277,11 @@ export const TiffinScreen = () => {
     if (!selectedGroup) return;
     const res = await api.regenerateTiffinInviteCode(selectedGroup._id);
     if (res.data?.inviteCode) {
-      setGroupDetails((prev: any) => ({
-        ...prev,
-        inviteCode: res.data.inviteCode,
-      }));
+      setGroupDetailsState((prev: any) =>
+        prev?.groupId === String(selectedGroup._id) && prev?.monthKey === selectedMonth
+          ? { ...prev, data: { ...prev.data, inviteCode: res.data.inviteCode } }
+          : prev
+      );
     }
   };
 
@@ -364,6 +383,9 @@ export const TiffinScreen = () => {
   const activeRate = selectedGroup?.pricePerTiffin || selectedGroup?.defaultPrice || 100;
 
   const monthTotal = groupDetails?.monthTotal ?? groupDetails?.cycleTotal ?? 0;
+  const monthTotalDisplay = groupDetails
+    ? `₹${monthTotal > 999 ? `${(monthTotal / 1000).toFixed(2)}k` : fmtMoney(monthTotal)}`
+    : '—';
   const monthQuantity = groupDetails?.monthQuantity ?? groupDetails?.cycleQuantity ?? 0;
   const memberCount = selectedGroup?.members?.length || 1;
   const todayEntries = groupDetails?.todayEntries || [];
@@ -436,7 +458,7 @@ export const TiffinScreen = () => {
             {/* Top Row: Rate Badge & Group Settings / Share */}
             <View style={styles.heroCardHeader}>
               <View style={styles.heroDiscountBadge}>
-                <Text style={styles.heroDiscountText}>% ₹{activeRate}/MEAL</Text>
+                <Text style={styles.heroDiscountText}>% ₹{fmtMoney(activeRate)}/MEAL</Text>
               </View>
 
               <View style={styles.heroHeaderBtnRow}>
@@ -487,7 +509,7 @@ export const TiffinScreen = () => {
               {/* Price & Status Row */}
               <View style={styles.heroPriceRow}>
                 <Text style={styles.heroPriceText}>
-                  ₹{noTiffinToday ? '0.00' : `${activeRate}.00`}
+                  ₹{noTiffinToday ? '0.00' : fmtMoney(activeRate)}
                 </Text>
                 <View style={styles.heroStatusChip}>
                   <Text style={styles.heroStatusChipText}>
@@ -617,7 +639,7 @@ export const TiffinScreen = () => {
           ]}
         >
           <View style={styles.metricCol}>
-            <Text style={[styles.metricVal, { color: theme.textPrimary }]}>₹{activeRate}</Text>
+            <Text style={[styles.metricVal, { color: theme.textPrimary }]}>₹{fmtMoney(activeRate)}</Text>
             <Text style={[styles.metricLabel, { color: theme.textMuted }]}>Rate/Meal</Text>
           </View>
           <View style={[styles.metricDivider, { backgroundColor: theme.borderSubtle }]} />
@@ -629,9 +651,7 @@ export const TiffinScreen = () => {
           <View style={[styles.metricDivider, { backgroundColor: theme.borderSubtle }]} />
 
           <View style={styles.metricCol}>
-            <Text style={[styles.metricVal, { color: '#f97316' }]}>
-              ₹{monthTotal > 999 ? `${(monthTotal / 1000).toFixed(1)}k` : monthTotal}
-            </Text>
+            <Text style={[styles.metricVal, { color: '#f97316' }]}>{monthTotalDisplay}</Text>
             <Text style={[styles.metricLabel, { color: theme.textMuted }]}>Month Bill</Text>
           </View>
           <View style={[styles.metricDivider, { backgroundColor: theme.borderSubtle }]} />
@@ -776,7 +796,7 @@ export const TiffinScreen = () => {
                             {m.name || 'Member'}
                           </Text>
                           <Text style={[styles.memberRowBaseSub, { color: theme.textMuted }]}>
-                            Base: ₹{Math.round(m.baseTotal || 0)}
+                            Base: ₹{fmtMoney(m.baseTotal)}
                           </Text>
                         </View>
                       </View>
@@ -803,7 +823,7 @@ export const TiffinScreen = () => {
                       {/* Total Due */}
                       <View style={{ flex: 1.2, alignItems: 'flex-end' }}>
                         <Text style={[styles.memberRowDueText, { color: '#f97316' }]}>
-                          ₹{Math.round(m.totalDue || 0).toLocaleString('en-IN')}
+                          ₹{fmtMoney(m.totalDue)}
                         </Text>
                       </View>
                     </View>
@@ -813,7 +833,7 @@ export const TiffinScreen = () => {
                 {/* Table Footer Total */}
                 <View style={[styles.memberTableFooterRow, { borderTopColor: theme.borderSubtle }]}>
                   <Text style={[styles.tfLabel, { color: theme.textPrimary }]}>Group Total ({formattedMonthLabel}):</Text>
-                  <Text style={styles.tfValue}>₹{monthTotal.toLocaleString('en-IN')}</Text>
+                  <Text style={styles.tfValue}>{groupDetails ? `₹${fmtMoney(monthTotal)}` : '—'}</Text>
                 </View>
               </View>
             )}
@@ -883,7 +903,7 @@ export const TiffinScreen = () => {
                         </View>
 
                         <Text style={[styles.ledgerTotalAmount, { color: isSkipped ? theme.textMuted : '#f97316' }]}>
-                          ₹{item.totalPrice || 0}
+                          ₹{fmtMoney(item.totalPrice ?? item.totalCost ?? 0)}
                         </Text>
                       </View>
 
@@ -913,7 +933,7 @@ export const TiffinScreen = () => {
                                 style={[styles.miniMemberBillPill, { backgroundColor: theme.bgElevated }]}
                               >
                                 <Text style={[styles.miniMemberBillText, { color: theme.textSecondary }]}>
-                                  {mObj?.name || 'Member'}: ₹{amt}
+                                  {mObj?.name || 'Member'}: ₹{fmtMoney(amt)}
                                 </Text>
                               </View>
                             );

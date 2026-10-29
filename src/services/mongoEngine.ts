@@ -154,6 +154,12 @@ export const clearAllMongoCollections = (): void => {
 // ── Database Initializer & Pre-Seeding ─────────────────────────────────────────
 export const initMongoEngine = async () => {
   try {
+    // Demo data is for brand-new installs only. A device with a stored real
+    // account must never get mock expenses / tiffin groups injected next to
+    // the synced records — offline they read as "shattered" history.
+    const existingSession = await safeStorage.getItem('xpenseflow_auth_token');
+    if (existingSession) return;
+
     const catCount = await db.categories.count();
     if (catCount === 0) {
       console.log('[MongoEngine] Seeding initial categories & expenses...');
