@@ -37,7 +37,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build debug development-client APK
+    name: Build standalone Android APK
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -117,17 +117,17 @@ jobs:
               -dname "CN=Android Debug,O=Android,C=US"
           fi
 
-      - name: Build Android debug APK
+      - name: Build standalone Android release APK
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon --stacktrace --console=plain
+          ./gradlew assembleRelease --no-daemon --stacktrace --console=plain
 
-      - name: Verify APK, application ID, and JavaScript bundle
+      - name: Verify standalone APK, application ID, and JavaScript bundle
         shell: bash
         run: |
           set -euo pipefail
-          apk="android/app/build/outputs/apk/debug/app-debug.apk"
+          apk="android/app/build/outputs/apk/release/app-release.apk"
           sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
           if [[ -z "$sdk_root" ]]; then
             echo "::error::Android SDK setup did not set ANDROID_HOME or ANDROID_SDK_ROOT."
@@ -149,21 +149,20 @@ jobs:
             echo "::error::Expected application ID com.xpenseflow.app; found '${application_id:-none}'."
             exit 1
           fi
-          echo "Verified debug APK for application ID $application_id: $apk"
+          echo "Verified release APK for application ID $application_id: $apk"
 
           bundles="$(unzip -Z1 "$apk" | grep -E '^assets/(index\.android\.bundle|_expo/static/js/android/.*\.hbc)$' || true)"
-          if [[ -n "$bundles" ]]; then
-            echo "Embedded JavaScript bundle files found in the APK:"
-            printf '%s\n' "$bundles"
-            echo "::notice::This debug development client still requires Metro to load the current project source."
-          else
-            echo "::notice::This debug development-client APK does not embed the JavaScript bundle and requires Metro."
+          if [[ -z "$bundles" ]]; then
+            echo "::error::Release APK has no embedded JavaScript bundle; refusing to publish an APK that needs Metro."
+            exit 1
           fi
+          echo "Verified embedded JavaScript bundle files:"
+          printf '%s\n' "$bundles"
 
       - name: Upload Android APK
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: xpenseflow-android-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
           retention-days: 7
