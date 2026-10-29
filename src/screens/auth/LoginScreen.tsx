@@ -16,6 +16,7 @@ import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../context/ThemeContext';
 import { useFeature } from '../../context/FeatureContext';
 import { AppLogo } from '../../components/AppLogo';
+import { api } from '../../services/api';
 
 export const LoginScreen = ({ navigation, route }: any) => {
   const { login } = useAuth();
@@ -48,7 +49,26 @@ export const LoginScreen = ({ navigation, route }: any) => {
     setLoading(false);
 
     if (!res.success) {
-      Alert.alert('Sign In Failed', res.error || 'Invalid email or password');
+      const error = res.error || 'Invalid email or password';
+      if (error.toLowerCase().includes('verification link') || error.toLowerCase().includes('using the link')) {
+        Alert.alert('Verify Your Email', error, [
+          {
+            text: 'Resend Link',
+            onPress: async () => {
+              setLoading(true);
+              const result = await api.resendVerificationEmail(email.trim(), password);
+              setLoading(false);
+              Alert.alert(
+                result.error ? 'Could Not Resend Link' : 'Verification Email Sent',
+                result.error || 'Check your inbox for the secure verification link.'
+              );
+            },
+          },
+          { text: 'Cancel', style: 'cancel' },
+        ]);
+      } else {
+        Alert.alert('Sign In Failed', error);
+      }
     } else {
       if (pendingFeature) {
         await setActiveFeature(pendingFeature);

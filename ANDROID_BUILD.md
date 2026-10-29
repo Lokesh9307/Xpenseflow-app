@@ -28,10 +28,14 @@ does not regenerate it with Expo Prebuild.
 
 ## Install and use
 
-This APK contains the JavaScript bundle and starts without Metro. The app
-uses `https://xpenseflow-backend.onrender.com` by default; an API URL saved in
-the app takes precedence. Features that require the backend need an internet
-connection and that service to be available.
+This APK contains the JavaScript bundle and starts without Metro. The app uses
+the `EXPO_PUBLIC_API_URL` value embedded during the build, or
+`https://xpenseflow-backend.onrender.com` if that variable is unset. An API URL
+saved in the app takes precedence. To use the Cloudflare backend, set the
+GitHub repository variable `EXPO_PUBLIC_API_URL` to the deployed Worker base
+URL (without an `/api` suffix), then build and install a new APK. Features that
+require the backend need an internet connection and that service to be
+available.
 
 1. Download `xpenseflow-android-apk` from the completed GitHub Actions run and
    extract `app-release.apk`.

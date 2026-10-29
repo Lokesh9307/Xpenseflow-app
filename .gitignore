@@ -34,9 +34,15 @@ yarn-error.*
 # local env files
 .env
 .env*.local
+.dev.vars
+.dev.vars.*
 
-# backend
-backend/
+# Backend runtime and Cloudflare local state
+backend/node_modules/
+backend/.wrangler/
+backend/worker-configuration.d.ts
+backend/migration-data/
+backend/firebase-service-account*.json
 
 # typescript
 *.tsbuildinfo

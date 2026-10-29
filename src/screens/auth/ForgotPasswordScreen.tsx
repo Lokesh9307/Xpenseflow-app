@@ -19,60 +19,56 @@ export const ForgotPasswordScreen = ({ route, navigation }: any) => {
   const { theme } = useTheme();
 
   const isResetStage = !!route.params?.otp;
-  const initialEmail = route.params?.email || '';
-
-  const [email, setEmail] = useState(initialEmail);
+  const [email, setEmail] = useState(route.params?.email || '');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const handleSendOtp = async () => {
+  const handleSendResetLink = async () => {
     if (!email.trim()) {
       Alert.alert('Email Required', 'Please enter your registered email address');
       return;
     }
 
     setLoading(true);
-    const res = await api.sendOtp(email.trim(), 'reset');
+    const res = await api.sendPasswordResetEmail(email.trim());
     setLoading(false);
 
     if (res.error) {
       Alert.alert('Error', res.error);
-    } else {
-      Alert.alert(
-        'Code Sent',
-        'A 4-digit password reset code has been sent to your email.'
-      );
+    } else if (res.data?.authFlow === 'otp') {
       navigation.navigate('OtpVerification', {
         email: email.trim(),
         type: 'reset',
       });
+    } else {
+      Alert.alert(
+        'Reset Link Sent',
+        'Open the password reset link in your email and set your new password in the secure page. Then return here to sign in.',
+        [{ text: 'Continue to Sign In', onPress: () => navigation.navigate('Login') }]
+      );
     }
   };
 
   const handleResetPassword = async () => {
-    if (!newPassword || newPassword.length < 6) {
+    if (newPassword.length < 6) {
       Alert.alert('Invalid Password', 'New password must be at least 6 characters');
       return;
     }
-
     if (newPassword !== confirmPassword) {
       Alert.alert('Mismatch', 'Passwords do not match');
       return;
     }
 
     setLoading(true);
-    const res = await api.resetPassword(email, newPassword);
+    const result = await api.resetPassword(email, newPassword);
     setLoading(false);
-
-    if (res.error) {
-      Alert.alert('Reset Failed', res.error);
+    if (result.error) {
+      Alert.alert('Reset Failed', result.error);
     } else {
-      Alert.alert(
-        'Password Changed!',
-        'Your password has been successfully reset. Please sign in.',
-        [{ text: 'Sign In', onPress: () => navigation.navigate('Login') }]
-      );
+      Alert.alert('Password Changed!', 'Your password has been reset. Please sign in.', [
+        { text: 'Sign In', onPress: () => navigation.navigate('Login') },
+      ]);
     }
   };
 
@@ -94,7 +90,7 @@ export const ForgotPasswordScreen = ({ route, navigation }: any) => {
           <Text style={[styles.subtitle, { color: theme.textMuted }]}>
             {isResetStage
               ? 'Enter your new secure password below'
-              : 'Enter your registered email and we will send you a reset code'}
+              : 'Enter your email and we will send a secure reset link or code.'}
           </Text>
         </View>
 
@@ -121,18 +117,13 @@ export const ForgotPasswordScreen = ({ route, navigation }: any) => {
                   />
                 </View>
               </View>
-
               <TouchableOpacity
                 style={[styles.submitBtn, { backgroundColor: theme.accentPrimary }]}
-                onPress={handleSendOtp}
+                onPress={handleSendResetLink}
                 disabled={loading}
                 activeOpacity={0.85}
               >
-                {loading ? (
-                  <ActivityIndicator color="#ffffff" />
-                ) : (
-                  <Text style={styles.submitBtnText}>Send Reset Code</Text>
-                )}
+                {loading ? <ActivityIndicator color="#ffffff" /> : <Text style={styles.submitBtnText}>Send Reset Instructions</Text>}
               </TouchableOpacity>
             </>
           ) : (
@@ -156,7 +147,6 @@ export const ForgotPasswordScreen = ({ route, navigation }: any) => {
                   />
                 </View>
               </View>
-
               <View style={styles.inputGroup}>
                 <Text style={[styles.label, { color: theme.textSecondary }]}>Confirm New Password</Text>
                 <View
@@ -176,18 +166,13 @@ export const ForgotPasswordScreen = ({ route, navigation }: any) => {
                   />
                 </View>
               </View>
-
               <TouchableOpacity
                 style={[styles.submitBtn, { backgroundColor: theme.accentPrimary }]}
                 onPress={handleResetPassword}
                 disabled={loading}
                 activeOpacity={0.85}
               >
-                {loading ? (
-                  <ActivityIndicator color="#ffffff" />
-                ) : (
-                  <Text style={styles.submitBtnText}>Update Password</Text>
-                )}
+                {loading ? <ActivityIndicator color="#ffffff" /> : <Text style={styles.submitBtnText}>Update Password</Text>}
               </TouchableOpacity>
             </>
           )}

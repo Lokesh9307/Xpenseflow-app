@@ -1,0 +1,30 @@
+{
+  "name": "xpenseflow-mobile-backend",
+  "version": "1.0.0",
+  "description": "Standalone backend server for XpenseFlow Native Mobile App",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "cloudflare:dev": "wrangler dev --config wrangler.jsonc",
+    "cloudflare:deploy": "wrangler deploy --config wrangler.jsonc",
+    "test:worker": "node --test test/*.test.mjs",
+    "data:export": "node scripts/export-mongo.cjs",
+    "data:import:d1": "node scripts/import-d1.mjs",
+    "data:import:firebase": "node scripts/import-firebase-users.cjs"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.9.5",
+    "node-cron": "^4.6.0"
+  },
+  "devDependencies": {
+    "firebase-admin": "^14.5.0",
+    "nodemon": "^3.1.9",
+    "wrangler": "^4.156.0"
+  }
+}

@@ -48,14 +48,19 @@ export const RegisterScreen = ({ navigation }: any) => {
     setLoading(false);
 
     if (res.success) {
-      Alert.alert(
-        'Verification Code Sent',
-        'Please check your email for the 4-digit verification code.'
-      );
-      navigation.navigate('OtpVerification', {
-        email: res.email || email.trim(),
-        type: 'signup',
-      });
+      if (res.authFlow === 'email-link') {
+        Alert.alert(
+          'Verification Email Sent',
+          'Open the secure verification link in your email, then return here to sign in.',
+          [{ text: 'Continue to Sign In', onPress: () => navigation.navigate('Login') }]
+        );
+      } else {
+        Alert.alert('Verification Code Sent', 'Please check your email for the 4-digit verification code.');
+        navigation.navigate('OtpVerification', {
+          email: res.email || email.trim(),
+          type: 'signup',
+        });
+      }
     } else {
       Alert.alert('Registration Failed', res.error || 'Something went wrong');
     }

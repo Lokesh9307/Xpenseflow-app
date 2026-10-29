@@ -43,6 +43,7 @@ jobs:
     env:
       CI: 'true'
       EXPO_NO_TELEMETRY: '1'
+      EXPO_PUBLIC_API_URL: ${{ vars.EXPO_PUBLIC_API_URL }}
       ANDROID_PLATFORM: '37.0'
       ANDROID_BUILD_TOOLS: '37.0.0'
       ANDROID_NDK_VERSION: '27.1.12297006'

@@ -8,12 +8,18 @@ const STORAGE_API_URL_KEY = 'xpenseflow_api_url';
 
 let cachedToken: string | null = null;
 let cachedUser: any | null = null;
+let sessionExpiredHandler: (() => void | Promise<void>) | null = null;
+let sessionExpiryHandled = false;
 
 const DEFAULT_RENDER_URL = 'https://xpenseflow-backend.onrender.com';
-let currentApiUrl: string = process.env.EXPO_PUBLIC_API_URL || DEFAULT_RENDER_URL;
+const buildApiUrl = process.env.EXPO_PUBLIC_API_URL;
+const configuredApiUrl = buildApiUrl || DEFAULT_RENDER_URL;
+let currentApiUrl = configuredApiUrl;
 
-safeStorage.getItem(STORAGE_API_URL_KEY).then((saved) => {
-  if (saved) currentApiUrl = saved;
+const apiUrlReady = safeStorage.getItem(STORAGE_API_URL_KEY).then((saved) => {
+  if (!buildApiUrl && saved) currentApiUrl = saved;
+}).catch((error) => {
+  console.error('Failed to restore the saved API URL:', error);
 });
 
 // Initialize on-device fallback MongoEngine
@@ -33,13 +39,18 @@ export const setApiUrl = async (url: string): Promise<void> => {
 };
 
 export const resetApiUrl = async (): Promise<void> => {
-  currentApiUrl = process.env.EXPO_PUBLIC_API_URL || DEFAULT_RENDER_URL;
+  currentApiUrl = configuredApiUrl;
   await safeStorage.removeItem(STORAGE_API_URL_KEY);
+};
+
+export const setSessionExpiredHandler = (handler: (() => void | Promise<void>) | null): void => {
+  sessionExpiredHandler = handler;
 };
 
 export const setStoredAuth = async (token: string, user: any): Promise<void> => {
   cachedToken = token;
   cachedUser = user;
+  sessionExpiryHandled = false;
   await safeStorage.setItem(STORAGE_TOKEN_KEY, token);
   await safeStorage.setItem(STORAGE_USER_KEY, JSON.stringify(user));
 };
@@ -183,6 +194,7 @@ export async function request<T = any>(
   endpoint: string,
   options: RequestInit = {}
 ): Promise<ApiResponse<T>> {
+  await apiUrlReady;
   const baseUrl = getApiUrl().replace(/\/+$/, '');
   const url = `${baseUrl}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
 
@@ -202,8 +214,7 @@ export async function request<T = any>(
 
   try {
     const controller = new AbortController();
-    // Generous timeout: Render's free tier cold-starts can exceed 15s, and a
-    // timeout here used to kick the app into its offline/mock fallback.
+    // Keep requests tolerant of cold starts without treating failed auth as success.
     const timeoutId = setTimeout(() => controller.abort(), 30000);
 
     const res = await fetch(url, {
@@ -216,6 +227,12 @@ export async function request<T = any>(
     const json = await res.json().catch(() => null);
 
     if (!res.ok) {
+      if (res.status === 401 && cachedToken) {
+        const shouldHandleExpiry = !sessionExpiryHandled;
+        sessionExpiryHandled = true;
+        await clearStoredAuth();
+        if (shouldHandleExpiry) await sessionExpiredHandler?.();
+      }
       return {
         status: res.status,
         error: json?.message || json?.error || `Server returned error (${res.status})`,
@@ -259,127 +276,62 @@ export const api = {
   getStaticGroupCode,
   // ── Authentication ─────────────────────────────────────────────────────────
   login: async (email: string, password: string): Promise<ApiResponse<any>> => {
-    const res = await request('/api/auth/login', {
+    return request('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     });
-
-    if (res.status === 200 && res.data?.token) {
-      await setStoredAuth(res.data.token, res.data.user);
-      return res;
-    }
-
-    if (res.status > 0) {
-      return res;
-    }
-
-    // Offline / Local Engine Fallback
-    try {
-      const cleanEmail = email.toLowerCase().trim();
-      let user = await db.users.findOne((u) => u.email === cleanEmail);
-      if (!user) {
-        user = await db.users.insertOne({
-          name: cleanEmail.split('@')[0],
-          email: cleanEmail,
-          password,
-          isVerified: true,
-          isOnboarded: true,
-          avatar: '',
-          currency: 'INR',
-        });
-      }
-
-      const token = `token_${createObjectId()}`;
-      const userPayload = {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        isOnboarded: user.isOnboarded !== false,
-        isAdmin: !!user.isAdmin,
-      };
-
-      await setStoredAuth(token, userPayload);
-      return { status: 200, data: { success: true, user: userPayload, token } };
-    } catch (err: any) {
-      return { status: 500, error: err.message || 'Login failed' };
-    }
   },
 
   register: async (name: string, email: string, password: string): Promise<ApiResponse<any>> => {
-    const res = await request('/api/auth/register', {
+    return request('/api/auth/register', {
       method: 'POST',
       body: JSON.stringify({ name, email, password }),
     });
-
-    if (res.status === 201 || res.status === 200) {
-      return res;
-    }
-
-    if (res.status > 0) {
-      return res;
-    }
-
-    // Offline Fallback
-    try {
-      const cleanEmail = email.toLowerCase().trim();
-      let user = await db.users.findOne((u) => u.email === cleanEmail);
-      if (user) {
-        return { status: 409, error: 'User already exists with this email' };
-      }
-      user = await db.users.insertOne({
-        name,
-        email: cleanEmail,
-        password,
-        isVerified: true,
-        isOnboarded: false,
-        avatar: '',
-        currency: 'INR',
-      });
-      return { status: 201, data: { success: true, email: cleanEmail, message: 'Account created' } };
-    } catch (err: any) {
-      return { status: 500, error: err.message || 'Registration failed' };
-    }
   },
 
-  verifyOtp: async (email: string, otp: string, type: 'signup' | 'reset'): Promise<ApiResponse<{ success: boolean }>> => {
-    const res = await request('/api/auth/verify-otp', {
+  verifyOtp: async (email: string, otp: string, type: 'signup' | 'reset'): Promise<ApiResponse<{ success: boolean }>> =>
+    request('/api/auth/verify-otp', {
       method: 'POST',
       body: JSON.stringify({ email, otp, type }),
-    });
-    if (res.status === 200) return res;
-    if (res.status > 0) return res;
-    return { status: 200, data: { success: true } };
-  },
+    }),
 
-  sendOtp: async (email: string, type: 'reset'): Promise<ApiResponse<{ success: boolean }>> => {
-    const res = await request('/api/auth/send-otp', {
+  sendOtp: async (email: string, type: 'signup' | 'reset'): Promise<ApiResponse<{ success: boolean }>> =>
+    request('/api/auth/send-otp', {
       method: 'POST',
       body: JSON.stringify({ email, type }),
-    });
-    if (res.status === 200) return res;
-    if (res.status > 0) return res;
-    return { status: 200, data: { success: true } };
-  },
+    }),
 
-  resetPassword: async (email: string, password: string): Promise<ApiResponse<{ success: boolean }>> => {
-    const res = await request('/api/auth/reset-password', {
+  resetPassword: async (email: string, password: string): Promise<ApiResponse<{ success: boolean }>> =>
+    request('/api/auth/reset-password', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
-    });
-    if (res.status === 200) return res;
-    if (res.status > 0) return res;
+    }),
 
-    try {
-      const cleanEmail = email.toLowerCase().trim();
-      const user = await db.users.findOne((u) => u.email === cleanEmail);
-      if (user) {
-        await db.users.updateOne(user._id, { password });
-      }
-      return { status: 200, data: { success: true } };
-    } catch (err: any) {
-      return { status: 500, error: err.message || 'Failed to reset password' };
+  sendPasswordResetEmail: async (email: string): Promise<ApiResponse<{ success?: boolean; authFlow?: 'email-link' | 'otp' }>> => {
+    const health = await request<{ authMode?: string }>('/api/health', { method: 'GET' });
+    if (health.status === 0) return { status: 0, error: health.error };
+
+    if (health.data?.authMode === 'email-link') {
+      const result = await request<{ success?: boolean }>('/api/auth/password-reset-email', {
+        method: 'POST',
+        body: JSON.stringify({ email }),
+      });
+      return result.status === 200
+        ? { ...result, data: { ...result.data, authFlow: 'email-link' } }
+        : result;
     }
+
+    const result = await api.sendOtp(email, 'reset');
+    return result.status === 200
+      ? { ...result, data: { ...result.data, authFlow: 'otp' } }
+      : result;
   },
+
+  resendVerificationEmail: async (email: string, password: string): Promise<ApiResponse<{ success: boolean }>> =>
+    request('/api/auth/resend-verification', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    }),
 
   // ── Dashboard & Cash Flow ──────────────────────────────────────────────────
   getIncomeSummary: async (): Promise<ApiResponse<any>> => {

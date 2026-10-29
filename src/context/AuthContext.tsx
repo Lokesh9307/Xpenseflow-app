@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { api, getStoredAuth, setStoredAuth, clearStoredAuth } from '../services/api';
+import { Alert } from 'react-native';
+import { api, getStoredAuth, setStoredAuth, clearStoredAuth, setSessionExpiredHandler } from '../services/api';
 import { copilotChatStore } from '../services/copilotChatStore';
 
 export interface User {
@@ -20,7 +21,7 @@ interface AuthContextType {
   isAuthenticated: boolean;
   isLoading: boolean;
   login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
-  register: (name: string, email: string, password: string) => Promise<{ success: boolean; error?: string; email?: string }>;
+  register: (name: string, email: string, password: string) => Promise<{ success: boolean; error?: string; email?: string; authFlow?: 'email-link' | 'otp' }>;
   verifyOtp: (email: string, otp: string, type: 'signup' | 'reset') => Promise<{ success: boolean; error?: string }>;
   logout: () => Promise<void>;
   updateUser: (updatedFields: Partial<User>) => void;
@@ -44,6 +45,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+
+  useEffect(() => {
+    setSessionExpiredHandler(async () => {
+      setToken(null);
+      copilotChatStore.clearMemory();
+      Alert.alert('Session Expired', 'Please sign in again to continue.');
+    });
+    return () => setSessionExpiredHandler(null);
+  }, []);
 
   // Restore stored session on startup
   useEffect(() => {
@@ -76,6 +86,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (res.data?.success && res.data?.token) {
       const loggedUser = res.data.user;
       const sessionToken = res.data.token;
+      if (user?.id && user.id !== loggedUser.id) {
+        await api.clearLocalUserCache();
+      }
       setUser(loggedUser);
       setToken(sessionToken);
       await setStoredAuth(sessionToken, loggedUser);
@@ -100,7 +113,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, error: res.error };
     }
 
-    return { success: true, email: res.data?.email || email };
+    const authFlow: 'email-link' | 'otp' =
+      res.data?.authFlow === 'email-link' ? 'email-link' : 'otp';
+    return {
+      success: true,
+      email: res.data?.email || email,
+      authFlow,
+    };
   };
 
   const verifyOtp = async (email: string, otp: string, type: 'signup' | 'reset') => {
@@ -108,10 +127,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const res = await api.verifyOtp(email, otp, type);
     setIsLoading(false);
 
-    if (res.error) {
-      return { success: false, error: res.error };
-    }
-
+    if (res.error) return { success: false, error: res.error };
     return { success: true };
   };
 
