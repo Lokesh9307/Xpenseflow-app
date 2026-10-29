@@ -43,7 +43,7 @@ jobs:
     env:
       CI: 'true'
       EXPO_NO_TELEMETRY: '1'
-      ANDROID_PLATFORM: '36'
+      ANDROID_PLATFORM: '37.0'
       ANDROID_BUILD_TOOLS: '37.0.0'
       ANDROID_NDK_VERSION: '27.1.12297006'
     steps:
@@ -88,7 +88,7 @@ jobs:
             echo "::error::Android SDK setup did not set ANDROID_HOME or ANDROID_SDK_ROOT."
             exit 1
           fi
-          sdkmanager --sdk_root="$sdk_root" --install \
+          sdkmanager --sdk_root="$sdk_root" --channel=3 --install \
             "platform-tools" \
             "platforms;android-${ANDROID_PLATFORM}" \
             "build-tools;${ANDROID_BUILD_TOOLS}" \
@@ -121,7 +121,7 @@ jobs:
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon --stacktrace --console=plain -Pandroid.compileSdkVersion=36
+          ./gradlew assembleDebug --no-daemon --stacktrace --console=plain
 
       - name: Verify APK, application ID, and JavaScript bundle
         shell: bash
