@@ -43,7 +43,7 @@ jobs:
     env:
       CI: 'true'
       EXPO_NO_TELEMETRY: '1'
-      ANDROID_PLATFORM: '37'
+      ANDROID_PLATFORM: '36'
       ANDROID_BUILD_TOOLS: '37.0.0'
       ANDROID_NDK_VERSION: '27.1.12297006'
     steps:
@@ -121,7 +121,7 @@ jobs:
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon --stacktrace --console=plain
+          ./gradlew assembleDebug --no-daemon --stacktrace --console=plain -Pandroid.compileSdkVersion=36
 
       - name: Verify APK, application ID, and JavaScript bundle
         shell: bash

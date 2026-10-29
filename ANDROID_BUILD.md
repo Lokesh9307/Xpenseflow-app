@@ -8,7 +8,12 @@ workflow**. The optional `ref` input builds another branch; leave it blank to
 use the branch selected in GitHub.
 
 The workflow uses Node.js 26, Java 17, the checked-in Gradle 9.4.1 wrapper,
-Android platform 37, build tools 37.0.0, and NDK 27.1.12297006. It runs
+Android platform 36, build tools 37.0.0, and NDK 27.1.12297006. React Native
+0.88.1's version catalog requests Android platform 37, but Google's SDK
+repository does not currently publish `platforms;android-37`. Expo's version
+catalog supports the workflow's `-Pandroid.compileSdkVersion=36` override,
+which lets Gradle build against the latest published Android platform without
+changing the application's native configuration. The workflow runs
 `npm ci` and `./gradlew assembleDebug --no-daemon`, verifies that the output
 APK has application ID `com.xpenseflow.app`, and uploads
 `xpenseflow-android-apk` for seven days. Download that artifact from the
