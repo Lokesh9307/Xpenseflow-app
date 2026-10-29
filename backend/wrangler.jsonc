@@ -10,7 +10,7 @@
 		{
 			"binding": "DB",
 			"database_name": "xpenseflow-db",
-			"database_id": "00000000-0000-0000-0000-000000000000",
+			"database_id": "b6257036-2953-4e44-84fd-639970d64e90",
 			"migrations_dir": "migrations"
 		},
 		{
