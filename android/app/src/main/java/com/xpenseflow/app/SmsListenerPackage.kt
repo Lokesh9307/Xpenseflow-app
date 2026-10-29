@@ -1,0 +1,19 @@
+package com.xpenseflow.app
+
+import com.facebook.react.ReactPackage
+import com.facebook.react.bridge.NativeModule
+import com.facebook.react.bridge.ReactApplicationContext
+import com.facebook.react.uimanager.ViewManager
+
+/**
+ * ReactPackage that registers SmsListenerModule with the React Native bridge.
+ */
+class SmsListenerPackage : ReactPackage {
+    override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> {
+        return listOf(SmsListenerModule(reactContext))
+    }
+
+    override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> {
+        return emptyList()
+    }
+}

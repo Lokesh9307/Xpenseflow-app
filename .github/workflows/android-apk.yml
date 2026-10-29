@@ -1,0 +1,169 @@
+name: Android APK
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - .github/workflows/android-apk.yml
+      - App.tsx
+      - app.json
+      - eas.json
+      - index.ts
+      - package.json
+      - package-lock.json
+      - src/**
+      - assets/**
+      - plugins/**
+      - android/**
+      - babel.config.*
+      - metro.config.*
+      - tsconfig.json
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Optional branch to build; leave empty to use the selected workflow branch
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-apk-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build debug development-client APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CI: 'true'
+      EXPO_NO_TELEMETRY: '1'
+      ANDROID_PLATFORM: '37'
+      ANDROID_BUILD_TOOLS: '37.0.0'
+      ANDROID_NDK_VERSION: '27.1.12297006'
+    steps:
+      - name: Check out application
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - name: Verify native Android project is committed
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in android/gradlew android/app/build.gradle android/gradle/wrapper/gradle-wrapper.properties; do
+            if [[ ! -f "$file" ]]; then
+              echo "::error::Required native Android file is missing: $file. Commit the existing android/ project; this workflow does not regenerate it."
+              exit 1
+            fi
+          done
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '26'
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          if [[ -z "$sdk_root" ]]; then
+            echo "::error::Android SDK setup did not set ANDROID_HOME or ANDROID_SDK_ROOT."
+            exit 1
+          fi
+          sdkmanager --sdk_root="$sdk_root" --install \
+            "platform-tools" \
+            "platforms;android-${ANDROID_PLATFORM}" \
+            "build-tools;${ANDROID_BUILD_TOOLS}" \
+            "ndk;${ANDROID_NDK_VERSION}"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Create an ephemeral Android debug signing key
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f android/app/debug.keystore ]]; then
+            keytool -genkeypair -v \
+              -storetype JKS \
+              -keystore android/app/debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+      - name: Build Android debug APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace --console=plain
+
+      - name: Verify APK, application ID, and JavaScript bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk="android/app/build/outputs/apk/debug/app-debug.apk"
+          sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          if [[ -z "$sdk_root" ]]; then
+            echo "::error::Android SDK setup did not set ANDROID_HOME or ANDROID_SDK_ROOT."
+            exit 1
+          fi
+          aapt="${sdk_root}/build-tools/${ANDROID_BUILD_TOOLS}/aapt"
+
+          if [[ ! -s "$apk" ]]; then
+            echo "::error::Gradle did not produce the expected APK: $apk"
+            exit 1
+          fi
+          if [[ ! -x "$aapt" ]]; then
+            echo "::error::Android package analyzer not found: $aapt"
+            exit 1
+          fi
+
+          application_id="$("$aapt" dump badging "$apk" | awk -F"'" '/^package: name=/{print $2; exit}')"
+          if [[ "$application_id" != "com.xpenseflow.app" ]]; then
+            echo "::error::Expected application ID com.xpenseflow.app; found '${application_id:-none}'."
+            exit 1
+          fi
+          echo "Verified debug APK for application ID $application_id: $apk"
+
+          bundles="$(unzip -Z1 "$apk" | grep -E '^assets/(index\.android\.bundle|_expo/static/js/android/.*\.hbc)$' || true)"
+          if [[ -n "$bundles" ]]; then
+            echo "Embedded JavaScript bundle files found in the APK:"
+            printf '%s\n' "$bundles"
+            echo "::notice::This debug development client still requires Metro to load the current project source."
+          else
+            echo "::notice::This debug development-client APK does not embed the JavaScript bundle and requires Metro."
+          fi
+
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: xpenseflow-android-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7
